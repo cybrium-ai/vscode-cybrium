@@ -40,7 +40,7 @@ let cyscanPath: string | null = null;
 
 // ── Activation ───────────────────────────────────────────────────────────────
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Cybrium');
   diagnostics = vscode.languages.createDiagnosticCollection('cybrium');
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -69,7 +69,31 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cybrium.explain', (diag: vscode.Diagnostic) => explainVulnerability(diag, context)),
     vscode.commands.registerCommand('cybrium.fixAll', () => fixAllFindings()),
     vscode.commands.registerCommand('cybrium.aiFixFile', () => aiFixCurrentFile()),
+    vscode.commands.registerCommand('cybrium.webScan', () => webScan()),
+    vscode.commands.registerCommand('cybrium.repoHealth', () => repoHealth()),
+    vscode.commands.registerCommand('cybrium.detectFrameworks', () => detectFrameworks()),
   );
+
+  // Show available tools notification on first activation
+  const hasShownWelcome = context.globalState.get<boolean>('cybrium.welcomeShown');
+  if (!hasShownWelcome) {
+    const tools: string[] = [];
+    if (findCyscan()) tools.push('cyscan (SAST/SCA/secrets — 1,067 rules)');
+    if (findBinary('cyweb')) tools.push('cyweb (web vulnerability scanner — 22 fuzz categories)');
+    if (findBinary('cyprobe')) tools.push('cyprobe (network device discovery)');
+
+    const msg = tools.length > 0
+      ? `Cybrium detected: ${tools.join(', ')}. Use Cmd+Shift+P → "Cybrium" for all commands.`
+      : 'Cybrium: Install security tools — brew tap cybrium-ai/cli && brew install cyscan cyweb cyprobe';
+
+    const action = await vscode.window.showInformationMessage(msg, 'Show Commands', 'Install Tools');
+    if (action === 'Show Commands') {
+      vscode.commands.executeCommand('workbench.action.quickOpen', '>Cybrium');
+    } else if (action === 'Install Tools') {
+      vscode.env.openExternal(vscode.Uri.parse('https://github.com/cybrium-ai/cyscan#install'));
+    }
+    context.globalState.update('cybrium.welcomeShown', true);
+  }
 
   // Auto-scan on save
   context.subscriptions.push(
@@ -548,4 +572,144 @@ async function aiFixCurrentFile() {
   } finally {
     scanDocument(editor.document);
   }
+}
+
+function findBinary(name: string): string | null {
+  const candidates = [
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    path.join(require('os').homedir(), `.cargo/bin/${name}`),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  try {
+    const r = cp.execSync(`which ${name}`, { timeout: 3000 }).toString().trim();
+    if (r && fs.existsSync(r)) return r;
+  } catch {}
+  return null;
+}
+
+async function webScan() {
+  const cyweb = findBinary('cyweb');
+  if (!cyweb) {
+    const action = await vscode.window.showWarningMessage(
+      'cyweb not installed. It scans websites for 22 vulnerability types: SQLi, XSS, SSRF, SSTI, XXE, CORS, JWT, LFI, command injection, and more.',
+      'Install cyweb',
+    );
+    if (action === 'Install cyweb') {
+      vscode.env.openExternal(vscode.Uri.parse('https://github.com/cybrium-ai/cyweb'));
+    }
+    return;
+  }
+
+  const url = await vscode.window.showInputBox({
+    prompt: 'Enter URL to scan',
+    placeHolder: 'https://example.com',
+    validateInput: (v) => v.startsWith('http') ? null : 'URL must start with http:// or https://',
+  });
+  if (!url) return;
+
+  statusBar.text = '$(loading~spin) Web scanning...';
+  outputChannel.show();
+  outputChannel.appendLine(`\n=== Cybrium Web Scan: ${url} ===\n`);
+
+  const proc = cp.spawn(cyweb, ['scan', url, '--format', 'text'], { timeout: 120000 });
+  proc.stdout.on('data', (d: Buffer) => outputChannel.append(d.toString()));
+  proc.stderr.on('data', (d: Buffer) => outputChannel.append(d.toString()));
+  proc.on('close', (code) => {
+    outputChannel.appendLine(`\n=== Scan complete (exit ${code}) ===`);
+    statusBar.text = '$(shield) Cybrium';
+    vscode.window.showInformationMessage(`Cybrium: Web scan of ${url} complete. Check Output panel.`);
+  });
+}
+
+async function repoHealth() {
+  if (!cyscanPath) {
+    vscode.window.showWarningMessage('cyscan not installed');
+    return;
+  }
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders) { vscode.window.showWarningMessage('No workspace open'); return; }
+
+  statusBar.text = '$(loading~spin) Checking health...';
+  const target = folders[0].uri.fsPath;
+
+  const result = await new Promise<string>((resolve) => {
+    const proc = cp.spawn(cyscanPath!, ['health', target, '--format', 'json'], { timeout: 30000 });
+    let stdout = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.on('close', () => resolve(stdout));
+    proc.on('error', () => resolve('{}'));
+  });
+
+  try {
+    const health = JSON.parse(result);
+    const panel = vscode.window.createWebviewPanel('cybriumHealth', 'Cybrium: Repo Health', vscode.ViewColumn.One, {});
+
+    const checksHtml = (health.checks || []).map((c: any) => {
+      const icon = c.passed ? '&#10004;' : '&#10008;';
+      const color = c.passed ? '#4ade80' : '#ef4444';
+      const sevColor = c.severity === 'critical' ? '#ef4444' : c.severity === 'high' ? '#f97316' : c.severity === 'medium' ? '#facc15' : '#9ca3af';
+      return `<tr>
+        <td style="color:${color};font-size:16px;text-align:center">${icon}</td>
+        <td><span style="background:${sevColor}22;color:${sevColor};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">${c.severity?.toUpperCase()}</span></td>
+        <td>${c.name}</td>
+        <td style="color:#9ca3af;font-size:12px">${c.passed ? '' : c.detail}</td>
+      </tr>`;
+    }).join('');
+
+    const scoreColor = health.score >= 80 ? '#4ade80' : health.score >= 50 ? '#facc15' : '#ef4444';
+
+    panel.webview.html = `<!DOCTYPE html><html><head><style>
+      body { font-family: -apple-system, sans-serif; padding: 24px; color: #e8e8f0; background: #0c0c1a; }
+      h1 { font-size: 48px; color: ${scoreColor}; margin: 0; }
+      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+      td { padding: 8px 12px; border-bottom: 1px solid #1e1e3a; font-size: 13px; }
+    </style></head><body>
+      <h1>${health.score}/100</h1>
+      <p style="color:#9ca3af">Repository Security Health Score</p>
+      <table>${checksHtml}</table>
+      <p style="color:#6b7280;margin-top:16px;font-size:11px">Powered by cyscan — cybrium.ai</p>
+    </body></html>`;
+  } catch {
+    outputChannel.appendLine(result);
+    vscode.window.showInformationMessage('Cybrium: Health check complete. See Output panel.');
+  }
+  statusBar.text = '$(shield) Cybrium';
+}
+
+async function detectFrameworks() {
+  if (!cyscanPath) {
+    vscode.window.showWarningMessage('cyscan not installed');
+    return;
+  }
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders) { vscode.window.showWarningMessage('No workspace open'); return; }
+
+  statusBar.text = '$(loading~spin) Detecting frameworks...';
+  const target = folders[0].uri.fsPath;
+
+  const result = await new Promise<string>((resolve) => {
+    const proc = cp.spawn(cyscanPath!, ['frameworks', target, '--format', 'json'], { timeout: 30000 });
+    let stdout = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.on('close', () => resolve(stdout));
+    proc.on('error', () => resolve('[]'));
+  });
+
+  try {
+    const frameworks = JSON.parse(result);
+    if (frameworks.length === 0) {
+      vscode.window.showInformationMessage('No frameworks detected.');
+    } else {
+      const items = frameworks.map((f: any) =>
+        `${f.name} (${f.language}) — ${f.category}${f.version ? ` v${f.version}` : ''}`
+      );
+      vscode.window.showQuickPick(items, { title: `${frameworks.length} Frameworks Detected`, canPickMany: false });
+    }
+  } catch {
+    outputChannel.appendLine(result);
+  }
+  statusBar.text = '$(shield) Cybrium';
 }
