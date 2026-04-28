@@ -2,7 +2,7 @@
   "name": "cybrium",
   "displayName": "Cybrium Security Scanner",
   "description": "Real-time SAST, SCA, and secrets detection powered by cyscan — 1,067 rules across 19 languages",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cybrium-ai",
   "icon": "icon.png",
   "repository": {
