@@ -46,6 +46,18 @@
       {
         "command": "cybrium.openDashboard",
         "title": "Cybrium: Open Dashboard"
+      },
+      {
+        "command": "cybrium.explain",
+        "title": "Cybrium: Explain Vulnerability"
+      },
+      {
+        "command": "cybrium.fixAll",
+        "title": "Cybrium: Fix All Findings in File"
+      },
+      {
+        "command": "cybrium.aiFixFile",
+        "title": "Cybrium: AI Fix — Generate Fix for Current File"
       }
     ],
     "configuration": {
