@@ -1,0 +1,150 @@
+{
+  "name": "cybrium-security-scanner",
+  "displayName": "Cybrium Security Scanner",
+  "description": "Real-time SAST, SCA, secrets detection — backed by cyscan (1,067 rules / 75+ languages) and cyweb (22 fuzz categories). AI-explain, AI-fix, repo health, framework detection. Free, local-first, no telemetry.",
+  "version": "0.2.0",
+  "publisher": "cybrium-ai",
+  "author": {
+    "name": "Cybrium AI",
+    "email": "eng@cybrium.ai",
+    "url": "https://cybrium.ai"
+  },
+  "license": "Apache-2.0",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "security",
+    "sast",
+    "sca",
+    "secrets",
+    "vulnerability",
+    "scanner",
+    "linter",
+    "cybrium"
+  ],
+  "homepage": "https://cybrium.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cybrium-ai/vscode-cybrium.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cybrium-ai/vscode-cybrium/issues"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cybrium.scanFile",
+        "title": "Cybrium: Scan Current File",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "cybrium.scanWorkspace",
+        "title": "Cybrium: Scan Workspace"
+      },
+      {
+        "command": "cybrium.openDashboard",
+        "title": "Cybrium: Open Dashboard"
+      },
+      {
+        "command": "cybrium.explain",
+        "title": "Cybrium: Explain Vulnerability"
+      },
+      {
+        "command": "cybrium.fixAll",
+        "title": "Cybrium: Fix All Findings"
+      },
+      {
+        "command": "cybrium.aiFixFile",
+        "title": "Cybrium: AI Fix Current File"
+      },
+      {
+        "command": "cybrium.webScan",
+        "title": "Cybrium: Web Scan a URL"
+      },
+      {
+        "command": "cybrium.repoHealth",
+        "title": "Cybrium: Repo Health Check"
+      },
+      {
+        "command": "cybrium.detectFrameworks",
+        "title": "Cybrium: Detect Frameworks"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "cybrium.scanFile",
+          "group": "cybrium@1",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "cybrium.aiFixFile",
+          "group": "cybrium@2",
+          "when": "editorTextFocus"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "cybrium.scanWorkspace",
+          "group": "cybrium@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Cybrium",
+      "properties": {
+        "cybrium.autoScan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan a file when it's opened or saved."
+        },
+        "cybrium.severityFilter": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"],
+          "default": "info",
+          "description": "Minimum severity to report (info shows everything)."
+        },
+        "cybrium.cyscanPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override the path to the cyscan binary. Leave blank to auto-discover via PATH (recommended)."
+        },
+        "cybrium.apiUrl": {
+          "type": "string",
+          "default": "https://app.cybrium.ai",
+          "description": "Cybrium platform URL used by Open Dashboard / AI Explain."
+        },
+        "cybrium.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for AI-powered features (Explain, AI Fix). Generate one at Settings → API Keys in your tenant.",
+          "markdownDescription": "API key for AI-powered features. Generate one at Settings → API Keys in your tenant. Stored in user settings — for shared workstations, prefer using the secret-storage CLI flow."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --no-yarn",
+    "publish": "npx @vscode/vsce publish --no-yarn --pat $VSCE_PAT"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
