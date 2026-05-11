@@ -72,6 +72,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cybrium.webScan', () => webScan()),
     vscode.commands.registerCommand('cybrium.repoHealth', () => repoHealth()),
     vscode.commands.registerCommand('cybrium.detectFrameworks', () => detectFrameworks()),
+    // v0.6.0 — cyradar (AI inventory channel #1: active discovery)
+    vscode.commands.registerCommand('cybrium.discoverAITools', () => discoverAITools()),
+    vscode.commands.registerCommand('cybrium.discoverAIServers', () => discoverAIServers()),
   );
 
   // Show available tools notification on first activation
@@ -81,6 +84,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (findCyscan()) tools.push('cyscan (SAST/SCA/secrets — 1,067 rules)');
     if (findBinary('cyweb')) tools.push('cyweb (web vulnerability scanner — 22 fuzz categories)');
     if (findBinary('cyprobe')) tools.push('cyprobe (network device discovery)');
+    if (findBinary('cyradar')) tools.push('cyradar (AI inference server + local AI-tooling discovery)');
 
     const msg = tools.length > 0
       ? `Cybrium detected: ${tools.join(', ')}. Use Cmd+Shift+P → "Cybrium" for all commands.`
@@ -712,4 +716,165 @@ async function detectFrameworks() {
     outputChannel.appendLine(result);
   }
   statusBar.text = '$(shield) Cybrium';
+}
+
+// ── cyradar — AI inventory (Sprint 67 channel #1: active discovery) ─────────
+
+/**
+ * Discover AI tooling installed on the current machine.
+ * Calls: cyradar local-scan --format json
+ * Surfaces CLIs, IDE extensions, desktop AI apps, and on-disk model files.
+ */
+async function discoverAITools() {
+  const cyradar = findBinary('cyradar');
+  if (!cyradar) {
+    const choice = await vscode.window.showWarningMessage(
+      'cyradar not found. Install with: brew install cybrium-ai/cli/cyradar',
+      'Open Install Docs'
+    );
+    if (choice === 'Open Install Docs') {
+      vscode.env.openExternal(vscode.Uri.parse('https://github.com/cybrium-ai/cyradar#install'));
+    }
+    return;
+  }
+
+  statusBar.text = '$(sync~spin) Cybrium: scanning local AI tooling…';
+  outputChannel.show(true);
+  outputChannel.appendLine('cyradar local-scan --format json');
+
+  const result = await new Promise<string>((resolve) => {
+    const proc = cp.spawn(cyradar, ['local-scan', '--format', 'json'], { timeout: 60000 });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', () => {
+      if (stderr) { outputChannel.appendLine(stderr); }
+      resolve(stdout);
+    });
+    proc.on('error', (e: Error) => { outputChannel.appendLine(`error: ${e.message}`); resolve('{}'); });
+  });
+
+  statusBar.text = '$(shield) Cybrium';
+
+  try {
+    const envelope = JSON.parse(result);
+    // cyradar wraps its report in an Envelope { report: {...} } — be liberal
+    const report = envelope.report ?? envelope;
+    const clis = report.clis ?? [];
+    const exts = report.ide_extensions ?? [];
+    const apps = report.desktop_apps ?? [];
+    const models = report.local_models ?? [];
+
+    const total = clis.length + exts.length + apps.length + models.length;
+    if (total === 0) {
+      vscode.window.showInformationMessage('cyradar: no AI tooling detected on this machine.');
+      return;
+    }
+
+    const items: vscode.QuickPickItem[] = [];
+    if (clis.length) {
+      items.push({ label: `$(terminal) ${clis.length} AI CLI${clis.length !== 1 ? 's' : ''}`, kind: vscode.QuickPickItemKind.Separator } as vscode.QuickPickItem);
+      for (const c of clis) { items.push({ label: c.name, description: c.version ?? '', detail: c.path }); }
+    }
+    if (exts.length) {
+      items.push({ label: `$(extensions) ${exts.length} IDE extension${exts.length !== 1 ? 's' : ''}`, kind: vscode.QuickPickItemKind.Separator } as vscode.QuickPickItem);
+      for (const e of exts) { items.push({ label: e.name, description: e.ide ?? '', detail: e.id ?? '' }); }
+    }
+    if (apps.length) {
+      items.push({ label: `$(window) ${apps.length} desktop app${apps.length !== 1 ? 's' : ''}`, kind: vscode.QuickPickItemKind.Separator } as vscode.QuickPickItem);
+      for (const a of apps) { items.push({ label: a.name, description: a.version ?? '', detail: a.path ?? '' }); }
+    }
+    if (models.length) {
+      items.push({ label: `$(database) ${models.length} on-disk model${models.length !== 1 ? 's' : ''}`, kind: vscode.QuickPickItemKind.Separator } as vscode.QuickPickItem);
+      for (const m of models) {
+        const size = m.size_bytes ? ` · ${(m.size_bytes / (1024 ** 3)).toFixed(1)} GiB` : '';
+        items.push({ label: m.name ?? path.basename(m.path ?? ''), description: m.format ?? '', detail: (m.path ?? '') + size });
+      }
+    }
+
+    vscode.window.showQuickPick(items, {
+      title: `Cybrium: ${total} AI artefact${total !== 1 ? 's' : ''} discovered on this machine`,
+      canPickMany: false,
+    });
+  } catch (e) {
+    outputChannel.appendLine(`cyradar local-scan: failed to parse output`);
+    outputChannel.appendLine(result.slice(0, 4000));
+  }
+}
+
+/**
+ * Sweep a network range / target list for self-hosted AI inference servers.
+ * Calls: cyradar discover --targets <input> --format json
+ * Prompts the operator for the target CIDR / host list before invoking.
+ */
+async function discoverAIServers() {
+  const cyradar = findBinary('cyradar');
+  if (!cyradar) {
+    const choice = await vscode.window.showWarningMessage(
+      'cyradar not found. Install with: brew install cybrium-ai/cli/cyradar',
+      'Open Install Docs'
+    );
+    if (choice === 'Open Install Docs') {
+      vscode.env.openExternal(vscode.Uri.parse('https://github.com/cybrium-ai/cyradar#install'));
+    }
+    return;
+  }
+
+  const targets = await vscode.window.showInputBox({
+    title: 'Cybrium: Discover AI inference servers',
+    prompt: 'Targets — host, host:port, http(s)://url, or CIDR (e.g. 10.0.0.0/24). Comma-separated.',
+    placeHolder: '10.0.0.0/24, ollama.lab.local:11434',
+    validateInput: (v) => v.trim().length === 0 ? 'Enter at least one target' : null,
+  });
+  if (!targets) { return; }
+
+  statusBar.text = '$(sync~spin) Cybrium: cyradar discover…';
+  outputChannel.show(true);
+  outputChannel.appendLine(`cyradar discover --targets ${targets} --format json`);
+
+  const result = await new Promise<string>((resolve) => {
+    const proc = cp.spawn(cyradar, ['discover', '--targets', targets, '--format', 'json'], { timeout: 300000 });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', () => {
+      if (stderr) { outputChannel.appendLine(stderr); }
+      resolve(stdout);
+    });
+    proc.on('error', (e: Error) => { outputChannel.appendLine(`error: ${e.message}`); resolve('{}'); });
+  });
+
+  statusBar.text = '$(shield) Cybrium';
+
+  try {
+    const envelope = JSON.parse(result);
+    const report = envelope.report ?? envelope;
+    const findings = report.servers ?? report.findings ?? [];
+
+    if (!Array.isArray(findings) || findings.length === 0) {
+      vscode.window.showInformationMessage(`cyradar: no AI servers detected in ${targets}.`);
+      return;
+    }
+
+    const items = findings.map((f: any) => {
+      const label = `${f.product ?? f.signature_id ?? 'unknown'} — ${f.target ?? f.host ?? ''}`;
+      const description = f.version ? `v${f.version}` : '';
+      const detail = [
+        f.endpoint ? `endpoint: ${f.endpoint}` : '',
+        f.confidence ? `confidence: ${f.confidence}` : '',
+        f.evidence ? `evidence: ${String(f.evidence).slice(0, 80)}` : '',
+      ].filter(Boolean).join(' · ');
+      return { label, description, detail };
+    });
+
+    vscode.window.showQuickPick(items, {
+      title: `Cybrium: ${findings.length} AI server${findings.length !== 1 ? 's' : ''} discovered`,
+      canPickMany: false,
+    });
+  } catch {
+    outputChannel.appendLine(result.slice(0, 4000));
+    vscode.window.showWarningMessage('cyradar returned non-JSON output (see Cybrium output channel).');
+  }
 }

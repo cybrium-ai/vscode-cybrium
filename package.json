@@ -1,8 +1,8 @@
 {
   "name": "cybrium",
   "displayName": "Cybrium Security Scanner",
-  "description": "Real-time SAST, SCA, secrets, K8s, endpoint, app package scanning, license compliance — 1,815 rules + CIA posture scoring across 75+ languages. Scan .app, .ipa, .apk, .exe, .deb, .rpm. Powered by cyscan + cyweb.",
-  "version": "0.5.0",
+  "description": "Real-time SAST, SCA, secrets, K8s, endpoint, app package scanning, license compliance — 1,815 rules + CIA posture scoring across 75+ languages. Scan .app, .ipa, .apk, .exe, .deb, .rpm. Plus active discovery of self-hosted AI inference servers (Ollama, vLLM, TGI, Triton, LM Studio). Powered by cyscan + cyweb + cyradar.",
+  "version": "0.6.0",
   "publisher": "cybrium-ai",
   "icon": "icon.png",
   "repository": {
@@ -13,7 +13,7 @@
     "vscode": "^1.85.0"
   },
   "categories": ["Linters", "Programming Languages", "Other"],
-  "keywords": ["security", "sast", "sca", "secrets", "vulnerability", "cyscan", "cyweb", "cybrium", "web-scanner", "dast"],
+  "keywords": ["security", "sast", "sca", "secrets", "vulnerability", "cyscan", "cyweb", "cyradar", "cybrium", "web-scanner", "dast", "ai-security", "ai-inventory", "ollama", "vllm", "llm"],
   "activationEvents": [
     "onLanguage:python", "onLanguage:javascript", "onLanguage:typescript",
     "onLanguage:go", "onLanguage:java", "onLanguage:ruby", "onLanguage:php",
@@ -32,7 +32,9 @@
       { "command": "cybrium.aiFixFile", "title": "Cybrium: AI Fix — Generate Fix for Current File" },
       { "command": "cybrium.webScan", "title": "Cybrium: Web Scan — Scan URL for vulnerabilities (SQLi, XSS, SSRF, 22 categories)" },
       { "command": "cybrium.repoHealth", "title": "Cybrium: Repository Health Check (14 checks, 0-100 score)" },
-      { "command": "cybrium.detectFrameworks", "title": "Cybrium: Detect Frameworks (35 frameworks, 9 languages)" }
+      { "command": "cybrium.detectFrameworks", "title": "Cybrium: Detect Frameworks (35 frameworks, 9 languages)" },
+      { "command": "cybrium.discoverAITools", "title": "Cybrium: Discover AI Tools on This Machine (cyradar local-scan)" },
+      { "command": "cybrium.discoverAIServers", "title": "Cybrium: Discover AI Servers on Network… (cyradar discover)" }
     ],
     "configuration": {
       "title": "Cybrium",
