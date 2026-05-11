@@ -1,0 +1,92 @@
+# Publish Cybrium Security Scanner to the VS Code Marketplace.
+#
+# Trigger: push a tag matching v*  →  e.g. `git tag v0.2.0 && git push --tags`
+#
+# The tag NAME (minus the leading `v`) must match the `version` field in
+# package.json — the workflow refuses to publish on mismatch. That way a
+# `git tag v0.3.0` push without first bumping package.json fails fast
+# instead of publishing the wrong version.
+#
+# Requires a GitHub Actions repo secret named VSCE_PAT — generate one at
+# https://dev.azure.com/cybrium/_usersSettings/tokens with the scope:
+#   Marketplace → Manage
+# (per the team's existing note: the PAT comes from the `cybrium` Azure
+# DevOps org, NOT cybrium-ai.)
+#
+# Publisher: cybrium-ai (registered on https://marketplace.visualstudio.com/manage/publishers/cybrium-ai)
+
+name: Publish to VS Code Marketplace
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the VSIX but don't publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # On manual workflow_dispatch GITHUB_REF_NAME isn't a tag — skip the check.
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG_VERSION, but package.json says $PKG_VERSION. Bump package.json or move the tag."
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version $PKG_VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npx tsc -p ./
+
+      - name: Build VSIX (always — helps debugging dry-run mode)
+        run: npx @vscode/vsce package --no-yarn --out cybrium-security-scanner-${{ steps.ver.outputs.version }}.vsix
+
+      - name: Upload VSIX as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybrium-security-scanner-${{ steps.ver.outputs.version }}
+          path: cybrium-security-scanner-${{ steps.ver.outputs.version }}.vsix
+          retention-days: 90
+
+      - name: Publish to Marketplace
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT secret is empty. Add it at: Settings → Secrets → Actions"
+            exit 1
+          fi
+          npx @vscode/vsce publish --no-yarn --packagePath cybrium-security-scanner-${{ steps.ver.outputs.version }}.vsix --pat "$VSCE_PAT"
+
+      - name: Summary
+        run: |
+          echo "## VS Code extension published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${{ steps.ver.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Publisher: cybrium-ai" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Marketplace: https://marketplace.visualstudio.com/items?itemName=cybrium-ai.cybrium-security-scanner" >> "$GITHUB_STEP_SUMMARY"
+          echo "- VSIX uploaded as build artifact for re-download" >> "$GITHUB_STEP_SUMMARY"
