@@ -1,136 +1,47 @@
 {
-  "name": "cybrium-security-scanner",
+  "name": "cybrium",
   "displayName": "Cybrium Security Scanner",
-  "description": "Real-time SAST, SCA, secrets detection — backed by cyscan (1,067 rules / 75+ languages) and cyweb (22 fuzz categories). AI-explain, AI-fix, repo health, framework detection. Free, local-first, no telemetry.",
-  "version": "0.2.0",
+  "description": "Real-time SAST, SCA, secrets, K8s, endpoint, app package scanning, license compliance — 1,815 rules + CIA posture scoring across 75+ languages. Scan .app, .ipa, .apk, .exe, .deb, .rpm. Powered by cyscan + cyweb.",
+  "version": "0.5.0",
   "publisher": "cybrium-ai",
-  "author": {
-    "name": "Cybrium AI",
-    "email": "eng@cybrium.ai",
-    "url": "https://cybrium.ai"
-  },
-  "license": "Apache-2.0",
   "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cybrium-ai/vscode-cybrium"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": [
-    "Linters",
-    "Programming Languages",
-    "Other"
-  ],
-  "keywords": [
-    "security",
-    "sast",
-    "sca",
-    "secrets",
-    "vulnerability",
-    "scanner",
-    "linter",
-    "cybrium"
-  ],
-  "homepage": "https://cybrium.ai",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/cybrium-ai/vscode-cybrium.git"
-  },
-  "bugs": {
-    "url": "https://github.com/cybrium-ai/vscode-cybrium/issues"
-  },
-  "main": "./out/extension.js",
+  "categories": ["Linters", "Programming Languages", "Other"],
+  "keywords": ["security", "sast", "sca", "secrets", "vulnerability", "cyscan", "cyweb", "cybrium", "web-scanner", "dast"],
   "activationEvents": [
-    "onStartupFinished"
+    "onLanguage:python", "onLanguage:javascript", "onLanguage:typescript",
+    "onLanguage:go", "onLanguage:java", "onLanguage:ruby", "onLanguage:php",
+    "onLanguage:rust", "onLanguage:c", "onLanguage:cpp", "onLanguage:csharp",
+    "onLanguage:terraform", "onLanguage:dockerfile", "onLanguage:yaml",
+    "onLanguage:json", "onLanguage:shellscript"
   ],
+  "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "cybrium.scanFile",
-        "title": "Cybrium: Scan Current File",
-        "icon": "$(shield)"
-      },
-      {
-        "command": "cybrium.scanWorkspace",
-        "title": "Cybrium: Scan Workspace"
-      },
-      {
-        "command": "cybrium.openDashboard",
-        "title": "Cybrium: Open Dashboard"
-      },
-      {
-        "command": "cybrium.explain",
-        "title": "Cybrium: Explain Vulnerability"
-      },
-      {
-        "command": "cybrium.fixAll",
-        "title": "Cybrium: Fix All Findings"
-      },
-      {
-        "command": "cybrium.aiFixFile",
-        "title": "Cybrium: AI Fix Current File"
-      },
-      {
-        "command": "cybrium.webScan",
-        "title": "Cybrium: Web Scan a URL"
-      },
-      {
-        "command": "cybrium.repoHealth",
-        "title": "Cybrium: Repo Health Check"
-      },
-      {
-        "command": "cybrium.detectFrameworks",
-        "title": "Cybrium: Detect Frameworks"
-      }
+      { "command": "cybrium.scanFile", "title": "Cybrium: Scan Current File" },
+      { "command": "cybrium.scanWorkspace", "title": "Cybrium: Scan Workspace" },
+      { "command": "cybrium.openDashboard", "title": "Cybrium: Open Dashboard" },
+      { "command": "cybrium.explain", "title": "Cybrium: Explain Vulnerability" },
+      { "command": "cybrium.fixAll", "title": "Cybrium: Fix All Findings in File" },
+      { "command": "cybrium.aiFixFile", "title": "Cybrium: AI Fix — Generate Fix for Current File" },
+      { "command": "cybrium.webScan", "title": "Cybrium: Web Scan — Scan URL for vulnerabilities (SQLi, XSS, SSRF, 22 categories)" },
+      { "command": "cybrium.repoHealth", "title": "Cybrium: Repository Health Check (14 checks, 0-100 score)" },
+      { "command": "cybrium.detectFrameworks", "title": "Cybrium: Detect Frameworks (35 frameworks, 9 languages)" }
     ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "cybrium.scanFile",
-          "group": "cybrium@1",
-          "when": "editorTextFocus"
-        },
-        {
-          "command": "cybrium.aiFixFile",
-          "group": "cybrium@2",
-          "when": "editorTextFocus"
-        }
-      ],
-      "explorer/context": [
-        {
-          "command": "cybrium.scanWorkspace",
-          "group": "cybrium@1"
-        }
-      ]
-    },
     "configuration": {
       "title": "Cybrium",
       "properties": {
-        "cybrium.autoScan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically scan a file when it's opened or saved."
-        },
-        "cybrium.severityFilter": {
-          "type": "string",
-          "enum": ["info", "low", "medium", "high", "critical"],
-          "default": "info",
-          "description": "Minimum severity to report (info shows everything)."
-        },
-        "cybrium.cyscanPath": {
-          "type": "string",
-          "default": "",
-          "description": "Override the path to the cyscan binary. Leave blank to auto-discover via PATH (recommended)."
-        },
-        "cybrium.apiUrl": {
-          "type": "string",
-          "default": "https://app.cybrium.ai",
-          "description": "Cybrium platform URL used by Open Dashboard / AI Explain."
-        },
-        "cybrium.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for AI-powered features (Explain, AI Fix). Generate one at Settings → API Keys in your tenant.",
-          "markdownDescription": "API key for AI-powered features. Generate one at Settings → API Keys in your tenant. Stored in user settings — for shared workstations, prefer using the secret-storage CLI flow."
-        }
+        "cybrium.autoScan": { "type": "boolean", "default": true, "description": "Automatically scan files on save" },
+        "cybrium.cyscanPath": { "type": "string", "default": "", "description": "Path to cyscan binary (auto-detected if empty)" },
+        "cybrium.apiUrl": { "type": "string", "default": "https://app.cybrium.ai", "description": "Cybrium platform URL" },
+        "cybrium.apiKey": { "type": "string", "default": "", "description": "API key for AI Fix and platform features" },
+        "cybrium.severityFilter": { "type": "string", "default": "info", "enum": ["critical", "high", "medium", "low", "info"], "description": "Minimum severity to show" }
       }
     }
   },
@@ -138,13 +49,12 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "npx @vscode/vsce package --no-yarn",
-    "publish": "npx @vscode/vsce publish --no-yarn --pat $VSCE_PAT"
+    "package": "vsce package"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^20.10.0",
+    "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
   }
 }
