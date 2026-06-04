@@ -75,6 +75,10 @@ export async function activate(context: vscode.ExtensionContext) {
     // v0.6.0 — cyradar (AI inventory channel #1: active discovery)
     vscode.commands.registerCommand('cybrium.discoverAITools', () => discoverAITools()),
     vscode.commands.registerCommand('cybrium.discoverAIServers', () => discoverAIServers()),
+    // v0.7.0 — cy-tls, cyred, cymail
+    vscode.commands.registerCommand('cybrium.tlsScan', () => tlsScan()),
+    vscode.commands.registerCommand('cybrium.aiRedTeam', () => aiRedTeam()),
+    vscode.commands.registerCommand('cybrium.emailSecurity', () => emailSecurity()),
   );
 
   // Show available tools notification on first activation
@@ -85,6 +89,9 @@ export async function activate(context: vscode.ExtensionContext) {
     if (findBinary('cyweb')) tools.push('cyweb (web vulnerability scanner — 22 fuzz categories)');
     if (findBinary('cyprobe')) tools.push('cyprobe (network device discovery)');
     if (findBinary('cyradar')) tools.push('cyradar (AI inference server + local AI-tooling discovery)');
+    if (findBinary('cy-tls')) tools.push('cy-tls (SSL/TLS posture)');
+    if (findBinary('cyred')) tools.push('cyred (AI red-team — jailbreak / prompt-injection)');
+    if (findBinary('cymail')) tools.push('cymail (email-domain security — SPF/DKIM/DMARC)');
 
     const msg = tools.length > 0
       ? `Cybrium detected: ${tools.join(', ')}. Use Cmd+Shift+P → "Cybrium" for all commands.`
@@ -579,6 +586,12 @@ async function aiFixCurrentFile() {
 }
 
 function findBinary(name: string): string | null {
+  // v0.7.0 — honour cybrium.<bin>Path config overrides (cy-tls -> cytlsPath).
+  const cfg = vscode.workspace.getConfiguration('cybrium');
+  const configKey = `${name.replace(/-/g, '')}Path`;
+  const configured = cfg.get<string>(configKey, '');
+  if (configured && fs.existsSync(configured)) return configured;
+
   const candidates = [
     `/opt/homebrew/bin/${name}`,
     `/usr/local/bin/${name}`,
@@ -877,4 +890,111 @@ async function discoverAIServers() {
     outputChannel.appendLine(result.slice(0, 4000));
     vscode.window.showWarningMessage('cyradar returned non-JSON output (see Cybrium output channel).');
   }
+}
+
+
+// ───────────────────────────────────────────────────────────────────
+// v0.7.0 — cy-tls / cyred / cymail integrations
+//
+// Each command:
+//   1. Locates the binary via findBinary(); offers a brew-install hint
+//      and "Install" link if missing.
+//   2. Prompts the user for the per-tool target (host:port / URL / domain).
+//   3. Spawns the binary with --format text, streaming stdout/stderr to
+//      the Cybrium output channel and the status bar.
+// ───────────────────────────────────────────────────────────────────
+
+function runToolInOutput(opts: {
+  bin: string;
+  binArgs: string[];
+  banner: string;
+  installHint: string;
+  installUrl: string;
+  timeoutMs?: number;
+}) {
+  const found = findBinary(opts.bin);
+  if (!found) {
+    vscode.window.showWarningMessage(
+      `${opts.bin} not installed. ${opts.installHint}`,
+      "Install",
+    ).then(action => {
+      if (action === "Install") {
+        vscode.env.openExternal(vscode.Uri.parse(opts.installUrl));
+      }
+    });
+    return;
+  }
+
+  statusBar.text = `$(loading~spin) ${opts.bin}...`;
+  outputChannel.show();
+  outputChannel.appendLine(`
+=== ${opts.banner} ===
+`);
+
+  const proc = cp.spawn(found, opts.binArgs, { timeout: opts.timeoutMs ?? 180000 });
+  proc.stdout.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+  proc.stderr.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+  proc.on("close", (code) => {
+    outputChannel.appendLine(`
+=== ${opts.bin} complete (exit ${code}) ===`);
+    statusBar.text = "$(shield) Cybrium";
+  });
+  proc.on("error", (err) => {
+    outputChannel.appendLine(`${opts.bin} error: ${err.message}`);
+    statusBar.text = "$(shield) Cybrium";
+  });
+}
+
+async function tlsScan() {
+  const target = await vscode.window.showInputBox({
+    prompt: "Enter host[:port] to scan SSL/TLS posture",
+    placeHolder: "example.com:443",
+    validateInput: (v) => v.trim().length > 0 ? null : "Host required",
+  });
+  if (!target) return;
+
+  runToolInOutput({
+    bin: "cy-tls",
+    binArgs: ["scan", target, "--format", "text"],
+    banner: `Cybrium SSL/TLS Scan: ${target}`,
+    installHint: "It probes TLS versions, ciphers, certificates, OCSP, HSTS preload, and 18 other surfaces.",
+    installUrl: "https://github.com/cybrium-ai/cy-tls",
+  });
+}
+
+async function aiRedTeam() {
+  const target = await vscode.window.showInputBox({
+    prompt: "Enter AI endpoint URL to red-team",
+    placeHolder: "https://api.example.com/v1/chat",
+    validateInput: (v) => v.startsWith("http") ? null : "URL must start with http:// or https://",
+  });
+  if (!target) return;
+
+  runToolInOutput({
+    bin: "cyred",
+    binArgs: ["probe", target, "--format", "text"],
+    banner: `Cybrium AI Red-Team: ${target}`,
+    installHint: "It runs jailbreak, prompt-injection, and data-exfil probes against AI endpoints.",
+    installUrl: "https://github.com/cybrium-ai/cyred",
+    timeoutMs: 300000,
+  });
+}
+
+async function emailSecurity() {
+  const domain = await vscode.window.showInputBox({
+    prompt: "Email domain to scan (SPF / DKIM / DMARC / MTA-STS / DNSSEC / BIMI)",
+    placeHolder: "example.com",
+    validateInput: (v) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v.trim())
+      ? null
+      : "Enter a bare domain (no scheme, no path)",
+  });
+  if (!domain) return;
+
+  runToolInOutput({
+    bin: "cymail",
+    binArgs: ["scan", "--domain", domain.trim(), "--format", "text"],
+    banner: `Cybrium Email Security: ${domain}`,
+    installHint: "It scores email posture (SPF / DKIM / DMARC / MTA-STS / DNSSEC / BIMI) with reputation + leak checks.",
+    installUrl: "https://github.com/cybrium-ai/cymail",
+  });
 }
