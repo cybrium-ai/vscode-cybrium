@@ -1,0 +1,447 @@
+<!doctype html>
+<!--
+  Cybrium Dependency Analytics Report — shared webview template.
+
+  Sprint 124. The exact same file is shipped by both:
+    - cybrium-ai/vscode-cybrium (resources/webview/report.html)
+    - cybrium-ai/intellij-cybrium (src/main/resources/webview/report.html)
+
+  Data is injected at load time by the host extension as a JSON blob in
+  the <script id="cybrium-report" type="application/json">…</script>
+  tag below. The page reads that on DOMContentLoaded; no fetch required.
+
+  Theme: the host sets data-theme="dark" | "light" on <html> based on
+  the editor theme, and inline CSS uses VS Code-style theme variables
+  (--vscode-foreground, --vscode-editor-background, etc.) when present.
+  IntelliJ JCEF gets a sensible default palette via the dark fallback.
+
+  Layout maps RHDA-style report:
+    - Hero with severity donut + license donut
+    - Tabs: Vulnerabilities (by dependency) | Licenses (by dependency)
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cybrium Dependency Analytics</title>
+  <style>
+    :root {
+      --fg:           var(--vscode-foreground,        #e2e8f0);
+      --fg-muted:     var(--vscode-descriptionForeground, #94a3b8);
+      --bg:           var(--vscode-editor-background, #0c111f);
+      --bg-panel:     var(--vscode-editorWidget-background, #11182b);
+      --border:       var(--vscode-panel-border,      #1e293b);
+      --accent:       var(--vscode-textLink-foreground, #7c5cfc);
+      --critical:     #ef4444;
+      --high:         #f97316;
+      --medium:       #facc15;
+      --low:          #3b82f6;
+      --info:         #94a3b8;
+      --permissive:   #3b82f6;
+      --weak-copyleft:#22c55e;
+      --strong-copyleft:#f97316;
+      --proprietary:  #ef4444;
+      --unknown:      #ea580c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+      font-size: 13px; line-height: 1.5;
+      color: var(--fg); background: var(--bg);
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+    h1 .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(124,92,252,0.12); color: var(--accent); font-weight: 500; }
+    .lead { color: var(--fg-muted); margin: 0 0 20px; font-size: 12px; }
+
+    .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+    .card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+    .card .title { font-size: 12px; font-weight: 600; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
+    .card .donut-row { display: flex; gap: 18px; align-items: center; }
+    .card .legend { font-size: 12px; }
+    .card .legend > div { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .card .legend .sw { width: 10px; height: 10px; border-radius: 3px; }
+    .card .legend .n { color: var(--fg-muted); margin-left: auto; font-variant-numeric: tabular-nums; min-width: 28px; text-align: right; }
+    .center-num { fill: var(--fg); font-size: 20px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+    .center-sub { fill: var(--fg-muted); font-size: 9px; text-anchor: middle; }
+
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .tab { padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--fg-muted); font-size: 12px; user-select: none; }
+    .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .toolbar input { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--fg); font-size: 12px; outline: none; }
+    .toolbar .count { color: var(--fg-muted); font-size: 11px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); padding: 8px 10px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+    td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:hover td { background: rgba(124,92,252,0.04); }
+
+    .dep-name { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+    .dep-name .direct { color: var(--fg-muted); font-size: 10px; margin-left: 6px; }
+    .ver { font-family: var(--vscode-editor-font-family, monospace); color: var(--fg-muted); }
+
+    .sev-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-right: 4px; }
+    .sev-chip[data-sev=critical] { background: rgba(239,68,68,0.15);  color: var(--critical); border: 1px solid rgba(239,68,68,0.3); }
+    .sev-chip[data-sev=high]     { background: rgba(249,115,22,0.15); color: var(--high);     border: 1px solid rgba(249,115,22,0.3); }
+    .sev-chip[data-sev=medium]   { background: rgba(250,204,21,0.15); color: var(--medium);   border: 1px solid rgba(250,204,21,0.3); }
+    .sev-chip[data-sev=low]      { background: rgba(59,130,246,0.15); color: var(--low);      border: 1px solid rgba(59,130,246,0.3); }
+    .sev-chip[data-sev=info]     { background: rgba(148,163,184,0.15);color: var(--info);     border: 1px solid rgba(148,163,184,0.3); }
+
+    .lic-chip { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+    .lic-chip[data-cat=permissive]      { background: rgba(59,130,246,0.15);  color: var(--permissive);     border: 1px solid rgba(59,130,246,0.3); }
+    .lic-chip[data-cat="weak-copyleft"] { background: rgba(34,197,94,0.15);   color: var(--weak-copyleft);  border: 1px solid rgba(34,197,94,0.3); }
+    .lic-chip[data-cat="strong-copyleft"]{ background: rgba(249,115,22,0.15);  color: var(--strong-copyleft); border: 1px solid rgba(249,115,22,0.3); }
+    .lic-chip[data-cat=proprietary]     { background: rgba(239,68,68,0.15);   color: var(--proprietary);    border: 1px solid rgba(239,68,68,0.3); }
+    .lic-chip[data-cat=unknown]         { background: rgba(234,88,12,0.15);   color: var(--unknown);        border: 1px solid rgba(234,88,12,0.3); }
+
+    .remediation-yes { color: var(--weak-copyleft); }
+    .remediation-no  { color: var(--fg-muted); }
+
+    .empty { text-align: center; padding: 40px 20px; color: var(--fg-muted); }
+    .empty .icon { font-size: 32px; opacity: 0.4; }
+
+    .footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-muted); display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>
+    <span>Cybrium Dependency Analytics</span>
+    <span class="pill" id="ecosystem-pill">—</span>
+  </h1>
+  <p class="lead" id="lead">
+    Vulnerability + license posture for this workspace's dependency tree.
+    Powered by <code>cyscan supply</code>.
+  </p>
+
+  <section class="hero">
+    <div class="card">
+      <div class="title">Vulnerabilities</div>
+      <div class="donut-row">
+        <svg id="vuln-donut" width="120" height="120" viewBox="0 0 120 120"></svg>
+        <div class="legend" id="vuln-legend"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="title">License Summary</div>
+      <div class="donut-row">
+        <svg id="lic-donut" width="120" height="120" viewBox="0 0 120 120"></svg>
+        <div class="legend" id="lic-legend"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="tabs">
+    <div class="tab active" data-panel="vuln-panel">Vulnerabilities</div>
+    <div class="tab"          data-panel="lic-panel">Licenses</div>
+  </div>
+
+  <section id="vuln-panel" class="panel active">
+    <div class="toolbar">
+      <input id="vuln-filter" type="search" placeholder="Filter by dependency name…" />
+      <span class="count" id="vuln-count"></span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Dependency</th>
+          <th>Current Version</th>
+          <th>Direct Vulnerabilities</th>
+          <th>Transitive Vulnerabilities</th>
+          <th>Remediation</th>
+        </tr>
+      </thead>
+      <tbody id="vuln-tbody"></tbody>
+    </table>
+    <div id="vuln-empty" class="empty" style="display:none">
+      <div class="icon">✓</div>
+      <p>No vulnerabilities detected. Maintain scan cadence to keep this state.</p>
+    </div>
+  </section>
+
+  <section id="lic-panel" class="panel">
+    <div class="toolbar">
+      <input id="lic-filter" type="search" placeholder="Filter by dependency name…" />
+      <span class="count" id="lic-count"></span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Dependency</th>
+          <th>Current Version</th>
+          <th>Concluded</th>
+          <th>Category</th>
+          <th>Evidences</th>
+        </tr>
+      </thead>
+      <tbody id="lic-tbody"></tbody>
+    </table>
+    <div id="lic-empty" class="empty" style="display:none">
+      <div class="icon">≅</div>
+      <p>No license metadata available — re-run with <code>cyscan supply --include-licenses</code>.</p>
+    </div>
+  </section>
+
+  <div class="footer">
+    <span id="generated-at">—</span>
+    <span>Cybrium · <code>cyscan supply</code></span>
+  </div>
+
+  <!-- Host-injected JSON; replaced before render. -->
+  <script id="cybrium-report" type="application/json">{}</script>
+
+  <script>
+    "use strict";
+
+    // ── Tiny donut renderer (no Chart.js dep) ────────────────────────
+    function renderDonut(svg, segments, centerNum, centerSub) {
+      const cx = 60, cy = 60, r = 44, sw = 12;
+      const total = segments.reduce((s, x) => s + x.value, 0);
+      svg.innerHTML = "";
+      const ns = "http://www.w3.org/2000/svg";
+
+      // background ring
+      const bg = document.createElementNS(ns, "circle");
+      bg.setAttribute("cx", cx); bg.setAttribute("cy", cy); bg.setAttribute("r", r);
+      bg.setAttribute("fill", "none"); bg.setAttribute("stroke", "rgba(255,255,255,0.04)");
+      bg.setAttribute("stroke-width", sw);
+      svg.appendChild(bg);
+
+      if (total > 0) {
+        const C = 2 * Math.PI * r;
+        let offset = 0;
+        segments.forEach(seg => {
+          if (seg.value <= 0) return;
+          const frac = seg.value / total;
+          const arc = document.createElementNS(ns, "circle");
+          arc.setAttribute("cx", cx); arc.setAttribute("cy", cy); arc.setAttribute("r", r);
+          arc.setAttribute("fill", "none"); arc.setAttribute("stroke", seg.color);
+          arc.setAttribute("stroke-width", sw);
+          arc.setAttribute("stroke-dasharray", `${C * frac} ${C}`);
+          arc.setAttribute("stroke-dashoffset", -offset * C);
+          arc.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+          svg.appendChild(arc);
+          offset += frac;
+        });
+      }
+
+      const t = document.createElementNS(ns, "text");
+      t.setAttribute("x", cx); t.setAttribute("y", cy - 2);
+      t.setAttribute("class", "center-num"); t.textContent = String(centerNum);
+      svg.appendChild(t);
+      const s = document.createElementNS(ns, "text");
+      s.setAttribute("x", cx); s.setAttribute("y", cy + 14);
+      s.setAttribute("class", "center-sub"); s.textContent = centerSub;
+      svg.appendChild(s);
+    }
+
+    function renderLegend(node, segments) {
+      node.innerHTML = "";
+      segments.forEach(seg => {
+        const row = document.createElement("div");
+        const sw = document.createElement("span");
+        sw.className = "sw"; sw.style.background = seg.color;
+        const label = document.createElement("span"); label.textContent = seg.label;
+        const n = document.createElement("span"); n.className = "n"; n.textContent = String(seg.value);
+        row.appendChild(sw); row.appendChild(label); row.appendChild(n);
+        node.appendChild(row);
+      });
+    }
+
+    function el(tag, attrs, txt) {
+      const node = document.createElement(tag);
+      if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+        if (v === null || v === undefined) return;
+        if (k === "class") node.className = String(v);
+        else node.setAttribute(k, String(v));
+      });
+      if (txt !== undefined && txt !== null) node.textContent = String(txt);
+      return node;
+    }
+
+    // ── Renderer ──────────────────────────────────────────────────────
+    function renderReport(data) {
+      const sev = data.summary || {};
+      const sevSegments = [
+        { label: "Critical: " + (sev.critical || 0), value: sev.critical || 0, color: "var(--critical)" },
+        { label: "High: "     + (sev.high     || 0), value: sev.high     || 0, color: "var(--high)"     },
+        { label: "Medium: "   + (sev.medium   || 0), value: sev.medium   || 0, color: "var(--medium)"   },
+        { label: "Low: "      + (sev.low      || 0), value: sev.low      || 0, color: "var(--low)"      },
+      ];
+      const uniqueVuln =
+        (sev.critical || 0) + (sev.high || 0) + (sev.medium || 0) + (sev.low || 0);
+      renderDonut(document.getElementById("vuln-donut"), sevSegments, uniqueVuln, "Unique vulnerabilities");
+      renderLegend(document.getElementById("vuln-legend"), sevSegments);
+
+      const licSum = (data.licenses && data.licenses.summary) || {};
+      const licSegments = [
+        { label: "Permissive: "       + (licSum.permissive       || 0), value: licSum.permissive       || 0, color: "var(--permissive)"       },
+        { label: "Weak Copyleft: "    + (licSum.weak_copyleft    || 0), value: licSum.weak_copyleft    || 0, color: "var(--weak-copyleft)"    },
+        { label: "Strong Copyleft: "  + (licSum.strong_copyleft  || 0), value: licSum.strong_copyleft  || 0, color: "var(--strong-copyleft)"  },
+        { label: "Proprietary: "      + (licSum.proprietary      || 0), value: licSum.proprietary      || 0, color: "var(--proprietary)"      },
+        { label: "Unknown: "          + (licSum.unknown          || 0), value: licSum.unknown          || 0, color: "var(--unknown)"          },
+      ];
+      const licTotal =
+        Object.values(licSum).reduce((a, b) => a + (Number(b) || 0), 0);
+      renderDonut(document.getElementById("lic-donut"), licSegments, licTotal, "Total licenses");
+      renderLegend(document.getElementById("lic-legend"), licSegments);
+
+      const ecosystem = data.ecosystem || (data.dependencies && data.dependencies[0]?.ecosystem) || "—";
+      document.getElementById("ecosystem-pill").textContent = ecosystem;
+
+      document.getElementById("generated-at").textContent =
+        "Generated " + (data.generated_at ? new Date(data.generated_at).toLocaleString() : "just now");
+
+      renderVulnTable(data.dependencies || []);
+      renderLicTable(data.licenses && data.licenses.by_dependency || []);
+    }
+
+    function renderVulnTable(deps) {
+      const tbody = document.getElementById("vuln-tbody");
+      const empty = document.getElementById("vuln-empty");
+      const cnt = document.getElementById("vuln-count");
+
+      const flagged = deps.filter(d =>
+        ((d.direct_vulnerabilities || []).length) +
+        ((d.transitive_vulnerabilities || []).length) > 0
+      );
+
+      tbody.innerHTML = "";
+      if (flagged.length === 0) {
+        empty.style.display = "block";
+        cnt.textContent = "0 of " + deps.length + " dependencies";
+        return;
+      }
+      empty.style.display = "none";
+
+      flagged.forEach(d => {
+        const tr = document.createElement("tr");
+        tr.dataset.name = (d.name || "").toLowerCase();
+
+        const nameTd = el("td");
+        nameTd.appendChild(el("span", { class: "dep-name" }, d.name || ""));
+        if (d.is_direct) nameTd.appendChild(el("span", { class: "direct" }, "direct"));
+        tr.appendChild(nameTd);
+
+        tr.appendChild(el("td", { class: "ver" }, d.version || "—"));
+
+        const dirTd = el("td");
+        dirTd.appendChild(renderVulnCell(d.direct_vulnerabilities || []));
+        tr.appendChild(dirTd);
+
+        const trTd = el("td");
+        trTd.appendChild(renderVulnCell(d.transitive_vulnerabilities || []));
+        tr.appendChild(trTd);
+
+        const remTd = el("td");
+        if (d.remediation && d.remediation.available) {
+          remTd.appendChild(el("span", { class: "remediation-yes" },
+            "✓ upgrade to " + (d.remediation.upgrade_to || "fixed version")));
+        } else {
+          remTd.appendChild(el("span", { class: "remediation-no" }, "No"));
+        }
+        tr.appendChild(remTd);
+
+        tbody.appendChild(tr);
+      });
+
+      cnt.textContent = flagged.length + " of " + deps.length + " dependencies";
+    }
+
+    function renderVulnCell(vulns) {
+      const wrap = el("div");
+      if (vulns.length === 0) {
+        wrap.appendChild(el("span", { class: "remediation-no" }, "0"));
+        return wrap;
+      }
+      const count = el("span", null, String(vulns.length));
+      count.style.marginRight = "6px";
+      count.style.fontWeight = "600";
+      wrap.appendChild(count);
+      const breakdown = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+      vulns.forEach(v => { const s = (v.severity || "info").toLowerCase();
+                          if (breakdown[s] !== undefined) breakdown[s]++; });
+      ["critical", "high", "medium", "low", "info"].forEach(s => {
+        if (breakdown[s] > 0) {
+          wrap.appendChild(el("span", { class: "sev-chip", "data-sev": s }, breakdown[s] + " " + s));
+        }
+      });
+      return wrap;
+    }
+
+    function renderLicTable(rows) {
+      const tbody = document.getElementById("lic-tbody");
+      const empty = document.getElementById("lic-empty");
+      const cnt = document.getElementById("lic-count");
+
+      tbody.innerHTML = "";
+      if (rows.length === 0) {
+        empty.style.display = "block";
+        cnt.textContent = "0 dependencies";
+        return;
+      }
+      empty.style.display = "none";
+
+      rows.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.dataset.name = (r.name || "").toLowerCase();
+
+        tr.appendChild(el("td", { class: "dep-name" }, r.name || ""));
+        tr.appendChild(el("td", { class: "ver" }, r.version || "—"));
+        tr.appendChild(el("td", { class: "dep-name" }, (r.license && r.license.name) || "—"));
+
+        const cat = (r.license && r.license.category) || "unknown";
+        const catTd = el("td");
+        catTd.appendChild(el("span", { class: "lic-chip", "data-cat": cat },
+          cat.replace(/-/g, " ").replace(/\b\w/g, m => m.toUpperCase())));
+        tr.appendChild(catTd);
+
+        tr.appendChild(el("td", { class: "ver" }, String((r.evidences || []).length || (r.evidence_count || 0))));
+
+        tbody.appendChild(tr);
+      });
+
+      cnt.textContent = rows.length + " dependencies";
+    }
+
+    // ── Tabs + filters + bootstrap ───────────────────────────────────
+    document.querySelectorAll(".tab").forEach(t => {
+      t.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach(x => x.classList.remove("active"));
+        t.classList.add("active");
+        document.getElementById(t.dataset.panel).classList.add("active");
+      });
+    });
+
+    function wireFilter(inputId, tbodyId) {
+      const input = document.getElementById(inputId);
+      const tbody = document.getElementById(tbodyId);
+      input.addEventListener("input", () => {
+        const q = input.value.trim().toLowerCase();
+        Array.from(tbody.children).forEach(tr => {
+          tr.style.display = !q || (tr.dataset.name || "").includes(q) ? "" : "none";
+        });
+      });
+    }
+
+    function bootstrap() {
+      const raw = document.getElementById("cybrium-report").textContent;
+      let data;
+      try { data = JSON.parse(raw); } catch { data = {}; }
+      renderReport(data);
+      wireFilter("vuln-filter", "vuln-tbody");
+      wireFilter("lic-filter",  "lic-tbody");
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bootstrap);
+    } else {
+      bootstrap();
+    }
+  </script>
+</body>
+</html>

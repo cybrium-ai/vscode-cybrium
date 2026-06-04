@@ -79,6 +79,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cybrium.tlsScan', () => tlsScan()),
     vscode.commands.registerCommand('cybrium.aiRedTeam', () => aiRedTeam()),
     vscode.commands.registerCommand('cybrium.emailSecurity', () => emailSecurity()),
+    // v0.8.0 — RHDA-style dependency analytics webview (donuts + tables)
+    vscode.commands.registerCommand('cybrium.dependencyReport', () => dependencyReport(context)),
   );
 
   // Show available tools notification on first activation
@@ -997,4 +999,338 @@ async function emailSecurity() {
     installHint: "It scores email posture (SPF / DKIM / DMARC / MTA-STS / DNSSEC / BIMI) with reputation + leak checks.",
     installUrl: "https://github.com/cybrium-ai/cymail",
   });
+}
+
+
+// ───────────────────────────────────────────────────────────────────
+// v0.8.0 — RHDA-style Dependency Analytics Report
+//
+// Spawns `cyscan supply --format json` on the active workspace, walks
+// the output, and renders the result in a webview backed by the shared
+// HTML template at resources/webview/report.html. The same template is
+// shipped in cybrium-ai/intellij-cybrium so the two extensions stay in
+// pixel lock-step.
+//
+// Canonical report shape (what the HTML expects):
+//   {
+//     ecosystem, generated_at,
+//     summary: { critical, high, medium, low },
+//     dependencies: [{
+//       name, version, ecosystem, is_direct,
+//       direct_vulnerabilities:     [{cve, severity, fixed_in}],
+//       transitive_vulnerabilities: [...],
+//       remediation: {available, upgrade_to}
+//     }],
+//     licenses: {
+//       summary: { permissive, weak_copyleft, strong_copyleft, proprietary, unknown },
+//       by_dependency: [{name, version, license: {name, category}, evidences}]
+//     }
+//   }
+// ───────────────────────────────────────────────────────────────────
+
+interface CanonicalReport {
+  ecosystem:   string;
+  generated_at: string;
+  summary:     { critical: number; high: number; medium: number; low: number };
+  dependencies: CanonicalDep[];
+  licenses: {
+    summary: { permissive: number; weak_copyleft: number; strong_copyleft: number; proprietary: number; unknown: number };
+    by_dependency: CanonicalLicenseRow[];
+  };
+}
+interface CanonicalDep {
+  name: string;
+  version: string;
+  ecosystem: string;
+  is_direct: boolean;
+  direct_vulnerabilities:     Array<{ cve: string; severity: string; fixed_in?: string }>;
+  transitive_vulnerabilities: Array<{ cve: string; severity: string; fixed_in?: string }>;
+  remediation: { available: boolean; upgrade_to?: string };
+}
+interface CanonicalLicenseRow {
+  name: string;
+  version: string;
+  license: { name: string; category: string };
+  evidences?: string[];
+  evidence_count?: number;
+}
+
+async function dependencyReport(context: vscode.ExtensionContext) {
+  const cyscan = findCyscan();
+  if (!cyscan) {
+    const action = await vscode.window.showWarningMessage(
+      "cyscan not installed. Required for dependency analytics (CVE + license).",
+      "Install cyscan",
+    );
+    if (action === "Install cyscan") {
+      vscode.env.openExternal(vscode.Uri.parse("https://github.com/cybrium-ai/cyscan#install"));
+    }
+    return;
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    vscode.window.showWarningMessage("Open a workspace folder first.");
+    return;
+  }
+  const workspaceRoot = folders[0].uri.fsPath;
+
+  statusBar.text = "$(loading~spin) Cybrium: dependencies…";
+  outputChannel.show();
+  outputChannel.appendLine(`\n=== Cybrium Dependency Analytics: ${workspaceRoot} ===\n`);
+
+  let raw = "";
+  try {
+    raw = await runCommandJson(cyscan, ["supply", workspaceRoot, "--format", "json"], 120000);
+  } catch (err) {
+    outputChannel.appendLine(`cyscan supply failed: ${(err as Error).message}`);
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showErrorMessage(
+      `Cybrium: cyscan supply failed. ${(err as Error).message.slice(0, 200)}`,
+    );
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    outputChannel.appendLine("cyscan supply returned non-JSON. Showing first 800 chars:");
+    outputChannel.appendLine(raw.slice(0, 800));
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showErrorMessage(
+      "Cybrium: cyscan supply returned non-JSON. See output panel.",
+    );
+    return;
+  }
+
+  const report = normalizeReport(parsed);
+  outputChannel.appendLine(
+    `cyscan: ${report.dependencies.length} deps, ` +
+    `${report.summary.critical}C/${report.summary.high}H/${report.summary.medium}M/${report.summary.low}L ` +
+    `vulns, ${report.licenses.by_dependency.length} licenses`,
+  );
+  statusBar.text = "$(shield) Cybrium";
+
+  openDependencyReportPanel(context, report);
+}
+
+function runCommandJson(bin: string, args: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = cp.spawn(bin, args, { timeout: timeoutMs });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0 || stdout.trim().startsWith("{") || stdout.trim().startsWith("[")) {
+        resolve(stdout);
+      } else {
+        reject(new Error(stderr.slice(0, 400) || `exit ${code}`));
+      }
+    });
+    proc.on("error", (err) => reject(err));
+  });
+}
+
+// Map a raw cyscan severity (string or CVSS number) to one of our 5 buckets.
+function normalizeSeverity(s: unknown): "critical" | "high" | "medium" | "low" | "info" {
+  if (typeof s === "number") {
+    if (s >= 9) return "critical";
+    if (s >= 7) return "high";
+    if (s >= 4) return "medium";
+    if (s > 0)  return "low";
+    return "info";
+  }
+  const t = String(s ?? "info").toLowerCase();
+  if (t.startsWith("crit"))   return "critical";
+  if (t.startsWith("high"))   return "high";
+  if (t.startsWith("med"))    return "medium";
+  if (t.startsWith("low"))    return "low";
+  return "info";
+}
+
+// Map a license-name or SPDX string to a category bucket.
+function classifyLicense(name: string): "permissive" | "weak-copyleft" | "strong-copyleft" | "proprietary" | "unknown" {
+  const n = name.toUpperCase();
+  if (!n || n === "UNKNOWN" || n === "NOASSERTION") return "unknown";
+  if (/(GPL-?3|AGPL|GPL-3|GNU GENERAL)/.test(n))    return "strong-copyleft";
+  if (/(LGPL|MPL|EPL|CDDL|GPL-?2)/.test(n))         return "weak-copyleft";
+  if (/(PROPRIETARY|COMMERCIAL)/.test(n))           return "proprietary";
+  // Common permissive licences.
+  if (/(MIT|BSD|APACHE|ISC|ZLIB|UNLICENSE|CC0|WTFPL|0BSD|PYTHON)/.test(n)) return "permissive";
+  return "unknown";
+}
+
+// Accept multiple cyscan output shapes and project into the canonical
+// report shape. This is the only place the extension knows about
+// cyscan's wire format — keeps the renderer + HTML template
+// presentation-only.
+function normalizeReport(raw: any): CanonicalReport {
+  const summary = { critical: 0, high: 0, medium: 0, low: 0 };
+  const licSum  = { permissive: 0, weak_copyleft: 0, strong_copyleft: 0, proprietary: 0, unknown: 0 };
+  const dependencies: CanonicalDep[] = [];
+  const licenseRows: CanonicalLicenseRow[] = [];
+
+  // Shape A: native cyscan-supply structured output (`dependencies` array).
+  const depsRaw: any[] = Array.isArray(raw?.dependencies) ? raw.dependencies
+                       : Array.isArray(raw?.deps)         ? raw.deps
+                       : [];
+
+  if (depsRaw.length > 0) {
+    for (const d of depsRaw) {
+      const directVulns: any[] = Array.isArray(d.direct_vulnerabilities) ? d.direct_vulnerabilities
+                                 : Array.isArray(d.vulnerabilities)       ? d.vulnerabilities
+                                 : [];
+      const transitiveVulns: any[] = Array.isArray(d.transitive_vulnerabilities) ? d.transitive_vulnerabilities : [];
+
+      const direct = directVulns.map(v => ({
+        cve: v.cve || v.id || v.cve_id || "",
+        severity: normalizeSeverity(v.severity ?? v.cvss),
+        fixed_in: v.fixed_in || v.fix_version,
+      }));
+      const transitive = transitiveVulns.map(v => ({
+        cve: v.cve || v.id || v.cve_id || "",
+        severity: normalizeSeverity(v.severity ?? v.cvss),
+        fixed_in: v.fixed_in || v.fix_version,
+      }));
+
+      for (const v of direct.concat(transitive)) {
+        const s = v.severity;
+        if (s === "critical" || s === "high" || s === "medium" || s === "low") summary[s]++;
+      }
+
+      const upgradeTo = d.remediation?.upgrade_to ||
+        direct.concat(transitive).find(v => v.fixed_in)?.fixed_in;
+
+      dependencies.push({
+        name:      String(d.name || d.package || "?"),
+        version:   String(d.version || d.current_version || "—"),
+        ecosystem: String(d.ecosystem || raw.ecosystem || ""),
+        is_direct: Boolean(d.is_direct ?? d.direct ?? false),
+        direct_vulnerabilities:     direct,
+        transitive_vulnerabilities: transitive,
+        remediation: {
+          available: Boolean(d.remediation?.available ?? (upgradeTo ? true : false)),
+          upgrade_to: upgradeTo,
+        },
+      });
+
+      const licName = (d.license?.name || d.license || d.licenses?.[0] || "Unknown").toString();
+      const category = (d.license?.category || classifyLicense(licName)).replace("_", "-") as keyof typeof licSum | string;
+      const catKey = (category === "weak-copyleft" ? "weak_copyleft"
+                     : category === "strong-copyleft" ? "strong_copyleft"
+                     : category) as keyof typeof licSum;
+      if (catKey in licSum) (licSum as any)[catKey]++;
+      else                  licSum.unknown++;
+
+      licenseRows.push({
+        name:    String(d.name || d.package || "?"),
+        version: String(d.version || d.current_version || "—"),
+        license: { name: licName, category: catKey.replace("_", "-") },
+        evidences: Array.isArray(d.license_evidences) ? d.license_evidences : undefined,
+        evidence_count: typeof d.license_evidence_count === "number" ? d.license_evidence_count : undefined,
+      });
+    }
+  } else {
+    // Shape B: flat findings list (legacy `cyscan scan --format sarif` /
+    // `cyscan supply` early variants). Group by dependency name.
+    const findings: any[] = Array.isArray(raw?.findings) ? raw.findings : [];
+    type Slot = { name: string; version: string; vulns: any[] };
+    const byDep = new Map<string, Slot>();
+    for (const f of findings) {
+      const name = f.dependency || f.package || (f.location?.uri?.split("/").pop()) || "unknown";
+      const key  = name + "@" + (f.version || "?");
+      const slot: Slot = byDep.get(key) || { name, version: f.version || "—", vulns: [] };
+      slot.vulns.push(f);
+      byDep.set(key, slot);
+    }
+    for (const slot of byDep.values()) {
+      const vulns = slot.vulns.map(v => ({
+        cve: v.cve || v.id || v.rule_id || "",
+        severity: normalizeSeverity(v.severity ?? v.cvss),
+        fixed_in: v.fixed_in || v.fix_version,
+      }));
+      for (const v of vulns) {
+        const s = v.severity;
+        if (s === "critical" || s === "high" || s === "medium" || s === "low") summary[s]++;
+      }
+      dependencies.push({
+        name: slot.name, version: slot.version, ecosystem: "",
+        is_direct: true,
+        direct_vulnerabilities: vulns,
+        transitive_vulnerabilities: [],
+        remediation: { available: Boolean(vulns.find(v => v.fixed_in)) },
+      });
+    }
+  }
+
+  // Honour pre-summarised license counts if cyscan provided them.
+  if (raw?.license_summary && typeof raw.license_summary === "object") {
+    for (const k of Object.keys(licSum)) {
+      if (typeof raw.license_summary[k] === "number") (licSum as any)[k] = raw.license_summary[k];
+    }
+  }
+  if (raw?.summary && typeof raw.summary === "object") {
+    for (const k of Object.keys(summary)) {
+      if (typeof raw.summary[k] === "number") (summary as any)[k] = raw.summary[k];
+    }
+  }
+
+  return {
+    ecosystem:    String(raw?.ecosystem || dependencies[0]?.ecosystem || "—"),
+    generated_at: String(raw?.generated_at || new Date().toISOString()),
+    summary,
+    dependencies,
+    licenses: { summary: licSum, by_dependency: licenseRows },
+  };
+}
+
+function openDependencyReportPanel(context: vscode.ExtensionContext, report: CanonicalReport) {
+  const panel = vscode.window.createWebviewPanel(
+    "cybriumDependencyReport",
+    "Cybrium · Dependency Analytics",
+    vscode.ViewColumn.One,
+    { enableScripts: true, retainContextWhenHidden: true },
+  );
+
+  // Load the shared template; inject the canonical report JSON into the
+  // empty <script id="cybrium-report" type="application/json">{}</script>
+  // tag. Same pattern IntelliJ uses with JCEF.
+  const templatePath = path.join(
+    context.extensionPath, "resources", "webview", "report.html",
+  );
+  let html: string;
+  try {
+    html = fs.readFileSync(templatePath, "utf-8");
+  } catch (err) {
+    panel.webview.html = `<html><body style="font-family:sans-serif;padding:24px;color:#e2e8f0;background:#0c111f;">
+      <h2>Cybrium report template missing</h2>
+      <p>Expected: <code>${templatePath}</code></p>
+      <p>${(err as Error).message}</p>
+    </body></html>`;
+    return;
+  }
+
+  const safeJson = JSON.stringify(report)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+
+  html = html.replace(
+    /<script id="cybrium-report" type="application\/json">[\s\S]*?<\/script>/,
+    `<script id="cybrium-report" type="application/json">${safeJson}</script>`,
+  );
+
+  // Theme handoff — set data-theme based on the active VS Code theme so
+  // the inline CSS picks the matching variables.
+  const isDark = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark
+              || vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrast;
+  html = html.replace(
+    '<html lang="en" data-theme="dark">',
+    `<html lang="en" data-theme="${isDark ? "dark" : "light"}">`,
+  );
+
+  panel.webview.html = html;
 }
