@@ -2,7 +2,7 @@
   "name": "cybrium",
   "displayName": "Cybrium Security Scanner",
   "description": "AI security + AI governance + AI inventory in your editor. Discover self-hosted AI inference servers (Ollama, vLLM, TGI, Triton, LM Studio, llama.cpp) and shadow-AI tooling on your machine. Probe SSL/TLS posture, red-team AI endpoints (jailbreak / prompt injection / data exfil), scan email domains (SPF / DKIM / DMARC / MTA-STS). Plus real-time SAST, SCA, secrets, K8s, endpoint, app-package and license-compliance scanning — 1,815 rules + CIA posture scoring across 75+ languages. Scan .app, .ipa, .apk, .exe, .deb, .rpm. Powered by cyscan + cyweb + cyradar + cy-tls + cyred + cymail.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "cybrium-ai",
   "icon": "icon.png",
   "repository": {
@@ -84,7 +84,8 @@
       { "command": "cybrium.tlsScan", "title": "Cybrium: TLS Scan — SSL/TLS posture (protocols, ciphers, cert, HSTS preload, OCSP)" },
       { "command": "cybrium.aiRedTeam", "title": "Cybrium: AI Red-Team — Jailbreak / prompt-injection / data-exfil probes against an AI endpoint" },
       { "command": "cybrium.emailSecurity", "title": "Cybrium: Email Security — SPF / DKIM / DMARC / MTA-STS / DNSSEC / BIMI scan" },
-      { "command": "cybrium.dependencyReport", "title": "Cybrium: Dependency Analytics Report — vulnerabilities + licenses per dependency (donut + tabbed tables)" }
+      { "command": "cybrium.dependencyReport", "title": "Cybrium: Dependency Analytics Report — vulnerabilities + licenses per dependency (donut + tabbed tables)" },
+      { "command": "cybrium.sendToCybriumPlatform", "title": "Cybrium: Send Findings to Cybrium Platform — POST current workspace findings to app.cybrium.ai" }
     ],
     "configuration": {
       "title": "Cybrium",

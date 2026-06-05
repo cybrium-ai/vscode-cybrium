@@ -1,0 +1,321 @@
+<!doctype html>
+<!--
+  Cybrium Repository Health Report — shared webview template.
+
+  Sprint 125 P1. The exact same file is shipped by both:
+    - cybrium-ai/vscode-cybrium (resources/webview/repo-health.html)
+    - cybrium-ai/intellij-cybrium (src/main/resources/webview/repo-health.html)
+
+  Data is injected by the host extension into the
+  <script id="cybrium-repo-health" type="application/json">…</script>
+  tag below. The page reads that on DOMContentLoaded; no fetch needed.
+
+  Canonical payload:
+    {
+      score:        0-100,
+      generated_at: ISO timestamp,
+      ecosystem:    optional language/project tag,
+      summary:      { passing, failing, total },
+      checks: [{
+        id, name, category, severity, passed,
+        detail?, remediation?
+      }]
+    }
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cybrium Repository Health</title>
+  <style>
+    :root {
+      --fg:           var(--vscode-foreground,        #e2e8f0);
+      --fg-muted:     var(--vscode-descriptionForeground, #94a3b8);
+      --bg:           var(--vscode-editor-background, #0c111f);
+      --bg-panel:     var(--vscode-editorWidget-background, #11182b);
+      --border:       var(--vscode-panel-border,      #1e293b);
+      --accent:       var(--vscode-textLink-foreground, #7c5cfc);
+      --pass:         #22c55e;
+      --critical:     #ef4444;
+      --high:         #f97316;
+      --medium:       #facc15;
+      --low:          #3b82f6;
+      --info:         #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+      font-size: 13px; line-height: 1.5;
+      color: var(--fg); background: var(--bg);
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+    h1 .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(124,92,252,0.12); color: var(--accent); font-weight: 500; }
+    .lead { color: var(--fg-muted); margin: 0 0 20px; font-size: 12px; }
+
+    .hero { display: grid; grid-template-columns: 280px 1fr; gap: 14px; margin-bottom: 20px; }
+    .card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+    .card .title { font-size: 12px; font-weight: 600; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
+    .gauge-row { display: flex; gap: 14px; align-items: center; }
+    .gauge-num { font-size: 20px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+    .gauge-sub { font-size: 9px; text-anchor: middle; fill: var(--fg-muted); }
+
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .summary-item { padding: 12px 14px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; }
+    .summary-item .n { font-size: 22px; font-weight: 600; }
+    .summary-item .l { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+
+    .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .toolbar input { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--fg); font-size: 12px; outline: none; }
+    .toolbar .count { color: var(--fg-muted); font-size: 11px; }
+    .toolbar select { padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--fg); font-size: 12px; outline: none; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); padding: 8px 10px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+    td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:hover td { background: rgba(124,92,252,0.04); }
+
+    .status-icon { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+    .status-icon.pass { background: rgba(34,197,94,0.15);  color: var(--pass);     border: 1px solid rgba(34,197,94,0.4); }
+    .status-icon.fail { background: rgba(239,68,68,0.15);  color: var(--critical); border: 1px solid rgba(239,68,68,0.4); }
+
+    .sev-chip { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+    .sev-chip[data-sev=critical] { background: rgba(239,68,68,0.15);  color: var(--critical); border: 1px solid rgba(239,68,68,0.3); }
+    .sev-chip[data-sev=high]     { background: rgba(249,115,22,0.15); color: var(--high);     border: 1px solid rgba(249,115,22,0.3); }
+    .sev-chip[data-sev=medium]   { background: rgba(250,204,21,0.15); color: var(--medium);   border: 1px solid rgba(250,204,21,0.3); }
+    .sev-chip[data-sev=low]      { background: rgba(59,130,246,0.15); color: var(--low);      border: 1px solid rgba(59,130,246,0.3); }
+    .sev-chip[data-sev=info]     { background: rgba(148,163,184,0.15);color: var(--info);     border: 1px solid rgba(148,163,184,0.3); }
+
+    .check-name { font-weight: 500; }
+    .check-cat  { font-size: 10px; color: var(--fg-muted); margin-top: 2px; }
+    .check-detail { font-size: 11px; color: var(--fg-muted); margin-top: 4px; max-width: 720px; }
+    .check-remediation { font-size: 11px; color: var(--fg); background: rgba(124,92,252,0.06); padding: 6px 9px; border-radius: 6px; margin-top: 6px; border-left: 2px solid var(--accent); max-width: 720px; }
+
+    .footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-muted); display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>
+    <span>Cybrium Repository Health</span>
+    <span class="pill" id="ecosystem-pill">—</span>
+  </h1>
+  <p class="lead">
+    14-check security-hygiene posture for this workspace.
+    Powered by <code>cyscan health</code>.
+  </p>
+
+  <section class="hero">
+    <div class="card">
+      <div class="title">Health Score</div>
+      <div class="gauge-row">
+        <svg id="score-gauge" width="120" height="120" viewBox="0 0 120 120"></svg>
+        <div>
+          <div id="score-label" style="font-size: 13px; font-weight: 500;">—</div>
+          <div style="font-size: 11px; color: var(--fg-muted); margin-top: 4px;">
+            Higher is better. <br>≥80 healthy · ≥50 watch · &lt;50 action.
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="title">Coverage</div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="n" id="sum-pass" style="color: var(--pass);">—</div>
+          <div class="l">Passing</div>
+        </div>
+        <div class="summary-item">
+          <div class="n" id="sum-fail" style="color: var(--critical);">—</div>
+          <div class="l">Failing</div>
+        </div>
+        <div class="summary-item">
+          <div class="n" id="sum-total">—</div>
+          <div class="l">Total</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <input id="filter" type="search" placeholder="Filter by check name…" />
+    <select id="status-filter">
+      <option value="all">All checks</option>
+      <option value="fail">Failing only</option>
+      <option value="pass">Passing only</option>
+    </select>
+    <span class="count" id="count"></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 38px;"></th>
+        <th>Check</th>
+        <th style="width: 88px;">Severity</th>
+        <th>Detail &amp; remediation</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <div class="footer">
+    <span id="generated-at">—</span>
+    <span>Cybrium · <code>cyscan health</code></span>
+  </div>
+
+  <script id="cybrium-repo-health" type="application/json">{}</script>
+
+  <script>
+    "use strict";
+
+    function renderGauge(svg, score) {
+      const cx = 60, cy = 60, r = 44, sw = 12;
+      svg.innerHTML = "";
+      const ns = "http://www.w3.org/2000/svg";
+
+      const bg = document.createElementNS(ns, "circle");
+      bg.setAttribute("cx", cx); bg.setAttribute("cy", cy); bg.setAttribute("r", r);
+      bg.setAttribute("fill", "none"); bg.setAttribute("stroke", "rgba(255,255,255,0.06)");
+      bg.setAttribute("stroke-width", sw);
+      svg.appendChild(bg);
+
+      const C = 2 * Math.PI * r;
+      const frac = Math.max(0, Math.min(1, score / 100));
+      const tone = score >= 80 ? "var(--pass)"
+                 : score >= 50 ? "var(--medium)"
+                 : "var(--critical)";
+
+      const arc = document.createElementNS(ns, "circle");
+      arc.setAttribute("cx", cx); arc.setAttribute("cy", cy); arc.setAttribute("r", r);
+      arc.setAttribute("fill", "none"); arc.setAttribute("stroke", tone);
+      arc.setAttribute("stroke-width", sw);
+      arc.setAttribute("stroke-dasharray", `${C * frac} ${C}`);
+      arc.setAttribute("stroke-linecap", "round");
+      arc.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+      svg.appendChild(arc);
+
+      const t = document.createElementNS(ns, "text");
+      t.setAttribute("x", cx); t.setAttribute("y", cy - 2);
+      t.setAttribute("class", "gauge-num");
+      t.setAttribute("fill", tone);
+      t.textContent = String(score);
+      svg.appendChild(t);
+      const s = document.createElementNS(ns, "text");
+      s.setAttribute("x", cx); s.setAttribute("y", cy + 14);
+      s.setAttribute("class", "gauge-sub");
+      s.textContent = "/100";
+      svg.appendChild(s);
+    }
+
+    function el(tag, attrs, txt) {
+      const n = document.createElement(tag);
+      if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+        if (v === null || v === undefined) return;
+        if (k === "class") n.className = String(v);
+        else n.setAttribute(k, String(v));
+      });
+      if (txt !== undefined && txt !== null) n.textContent = String(txt);
+      return n;
+    }
+
+    function renderReport(data) {
+      const checks = Array.isArray(data.checks) ? data.checks : [];
+      const passing = checks.filter(c => c.passed).length;
+      const failing = checks.length - passing;
+      const score = typeof data.score === "number"
+        ? data.score
+        : (checks.length ? Math.round(100 * passing / checks.length) : 0);
+
+      renderGauge(document.getElementById("score-gauge"), score);
+      document.getElementById("score-label").textContent =
+        score >= 80 ? "Healthy" : score >= 50 ? "Watch" : "Action needed";
+
+      const sum = data.summary || { passing, failing, total: checks.length };
+      document.getElementById("sum-pass").textContent  = String(sum.passing  ?? passing);
+      document.getElementById("sum-fail").textContent  = String(sum.failing  ?? failing);
+      document.getElementById("sum-total").textContent = String(sum.total    ?? checks.length);
+
+      document.getElementById("ecosystem-pill").textContent =
+        data.ecosystem || data.project_kind || "—";
+      document.getElementById("generated-at").textContent =
+        "Generated " + (data.generated_at ? new Date(data.generated_at).toLocaleString() : "just now");
+
+      renderTable(checks);
+      document.getElementById("count").textContent = `${checks.length} checks`;
+    }
+
+    function renderTable(checks) {
+      const tbody = document.getElementById("tbody");
+      tbody.innerHTML = "";
+
+      // Sort: failing first (worst severity first within each group), then passing.
+      const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const sorted = [...checks].sort((a, b) => {
+        if (a.passed !== b.passed) return a.passed ? 1 : -1;
+        return (order[a.severity] ?? 9) - (order[b.severity] ?? 9);
+      });
+
+      sorted.forEach(c => {
+        const tr = document.createElement("tr");
+        tr.dataset.name   = (c.name || c.id || "").toLowerCase();
+        tr.dataset.status = c.passed ? "pass" : "fail";
+
+        const iconTd = el("td");
+        const icon = el("span", { class: "status-icon " + (c.passed ? "pass" : "fail") },
+                        c.passed ? "✓" : "✗");
+        iconTd.appendChild(icon);
+        tr.appendChild(iconTd);
+
+        const nameTd = el("td");
+        nameTd.appendChild(el("div", { class: "check-name" }, c.name || c.id || "Untitled"));
+        if (c.category) nameTd.appendChild(el("div", { class: "check-cat" }, c.category));
+        tr.appendChild(nameTd);
+
+        const sevTd = el("td");
+        const sev = (c.severity || "info").toLowerCase();
+        sevTd.appendChild(el("span", { class: "sev-chip", "data-sev": sev },
+                              sev[0].toUpperCase() + sev.slice(1)));
+        tr.appendChild(sevTd);
+
+        const detailTd = el("td");
+        if (c.detail) detailTd.appendChild(el("div", { class: "check-detail" }, c.detail));
+        if (c.remediation && !c.passed) {
+          detailTd.appendChild(el("div", { class: "check-remediation" }, c.remediation));
+        }
+        tr.appendChild(detailTd);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function wireFilters() {
+      const text = document.getElementById("filter");
+      const status = document.getElementById("status-filter");
+      const apply = () => {
+        const q = text.value.trim().toLowerCase();
+        const s = status.value;
+        Array.from(document.getElementById("tbody").children).forEach(tr => {
+          const matchText  = !q || (tr.dataset.name || "").includes(q);
+          const matchState = s === "all" || tr.dataset.status === s;
+          tr.style.display = (matchText && matchState) ? "" : "none";
+        });
+      };
+      text.addEventListener("input", apply);
+      status.addEventListener("change", apply);
+    }
+
+    function bootstrap() {
+      let data;
+      try { data = JSON.parse(document.getElementById("cybrium-repo-health").textContent); }
+      catch { data = {}; }
+      renderReport(data);
+      wireFilters();
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bootstrap);
+    } else {
+      bootstrap();
+    }
+  </script>
+</body>
+</html>

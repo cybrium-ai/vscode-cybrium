@@ -70,7 +70,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cybrium.fixAll', () => fixAllFindings()),
     vscode.commands.registerCommand('cybrium.aiFixFile', () => aiFixCurrentFile()),
     vscode.commands.registerCommand('cybrium.webScan', () => webScan()),
-    vscode.commands.registerCommand('cybrium.repoHealth', () => repoHealth()),
+    vscode.commands.registerCommand('cybrium.repoHealth', () => repoHealth(context)),
     vscode.commands.registerCommand('cybrium.detectFrameworks', () => detectFrameworks()),
     // v0.6.0 — cyradar (AI inventory channel #1: active discovery)
     vscode.commands.registerCommand('cybrium.discoverAITools', () => discoverAITools()),
@@ -81,6 +81,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cybrium.emailSecurity', () => emailSecurity()),
     // v0.8.0 — RHDA-style dependency analytics webview (donuts + tables)
     vscode.commands.registerCommand('cybrium.dependencyReport', () => dependencyReport(context)),
+    // v0.9.0 — Send workspace findings to the Cybrium platform
+    vscode.commands.registerCommand('cybrium.sendToCybriumPlatform', () => sendToCybriumPlatform()),
   );
 
   // Show available tools notification on first activation
@@ -643,7 +645,7 @@ async function webScan() {
   });
 }
 
-async function repoHealth() {
+async function repoHealth(context: vscode.ExtensionContext) {
   if (!cyscanPath) {
     vscode.window.showWarningMessage('cyscan not installed');
     return;
@@ -661,41 +663,86 @@ async function repoHealth() {
     proc.on('close', () => resolve(stdout));
     proc.on('error', () => resolve('{}'));
   });
-
-  try {
-    const health = JSON.parse(result);
-    const panel = vscode.window.createWebviewPanel('cybriumHealth', 'Cybrium: Repo Health', vscode.ViewColumn.One, {});
-
-    const checksHtml = (health.checks || []).map((c: any) => {
-      const icon = c.passed ? '&#10004;' : '&#10008;';
-      const color = c.passed ? '#4ade80' : '#ef4444';
-      const sevColor = c.severity === 'critical' ? '#ef4444' : c.severity === 'high' ? '#f97316' : c.severity === 'medium' ? '#facc15' : '#9ca3af';
-      return `<tr>
-        <td style="color:${color};font-size:16px;text-align:center">${icon}</td>
-        <td><span style="background:${sevColor}22;color:${sevColor};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">${c.severity?.toUpperCase()}</span></td>
-        <td>${c.name}</td>
-        <td style="color:#9ca3af;font-size:12px">${c.passed ? '' : c.detail}</td>
-      </tr>`;
-    }).join('');
-
-    const scoreColor = health.score >= 80 ? '#4ade80' : health.score >= 50 ? '#facc15' : '#ef4444';
-
-    panel.webview.html = `<!DOCTYPE html><html><head><style>
-      body { font-family: -apple-system, sans-serif; padding: 24px; color: #e8e8f0; background: #0c0c1a; }
-      h1 { font-size: 48px; color: ${scoreColor}; margin: 0; }
-      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-      td { padding: 8px 12px; border-bottom: 1px solid #1e1e3a; font-size: 13px; }
-    </style></head><body>
-      <h1>${health.score}/100</h1>
-      <p style="color:#9ca3af">Repository Security Health Score</p>
-      <table>${checksHtml}</table>
-      <p style="color:#6b7280;margin-top:16px;font-size:11px">Powered by cyscan — cybrium.ai</p>
-    </body></html>`;
-  } catch {
-    outputChannel.appendLine(result);
-    vscode.window.showInformationMessage('Cybrium: Health check complete. See Output panel.');
-  }
   statusBar.text = '$(shield) Cybrium';
+
+  let parsed: any;
+  try { parsed = JSON.parse(result); }
+  catch {
+    outputChannel.appendLine(result);
+    vscode.window.showWarningMessage('Cybrium: cyscan health returned non-JSON. See Output panel.');
+    return;
+  }
+
+  // Sprint 125 P1 — render the canonical Repo Health payload in the
+  // shared resources/webview/repo-health.html template (same one shipped
+  // by intellij-cybrium so both extensions render identically).
+  openRepoHealthPanel(context, normaliseRepoHealth(parsed));
+}
+
+function normaliseRepoHealth(raw: any): {
+  score: number; generated_at: string; ecosystem: string;
+  summary: { passing: number; failing: number; total: number };
+  checks: Array<{ id: string; name: string; category: string; severity: string; passed: boolean; detail?: string; remediation?: string }>;
+} {
+  const checks = Array.isArray(raw?.checks) ? raw.checks.map((c: any) => ({
+    id:        String(c.id || c.rule_id || c.name || ''),
+    name:      String(c.name || c.title || c.id || 'Untitled'),
+    category:  String(c.category || c.group || ''),
+    severity:  String(c.severity || 'info').toLowerCase(),
+    passed:    Boolean(c.passed),
+    detail:    typeof c.detail === 'string' ? c.detail : undefined,
+    remediation: typeof c.remediation === 'string' ? c.remediation :
+                 typeof c.fix === 'string'         ? c.fix         : undefined,
+  })) : [];
+  const passing = checks.filter((c: any) => c.passed).length;
+  const failing = checks.length - passing;
+  const score = typeof raw?.score === 'number'
+    ? raw.score
+    : (checks.length ? Math.round(100 * passing / checks.length) : 0);
+  return {
+    score,
+    generated_at: String(raw?.generated_at || new Date().toISOString()),
+    ecosystem: String(raw?.ecosystem || raw?.project_kind || ''),
+    summary: {
+      passing: Number(raw?.summary?.passing ?? passing),
+      failing: Number(raw?.summary?.failing ?? failing),
+      total:   Number(raw?.summary?.total   ?? checks.length),
+    },
+    checks,
+  };
+}
+
+function openRepoHealthPanel(context: vscode.ExtensionContext, report: any) {
+  const panel = vscode.window.createWebviewPanel(
+    'cybriumRepoHealth', 'Cybrium · Repository Health',
+    vscode.ViewColumn.One, { enableScripts: true, retainContextWhenHidden: true },
+  );
+  const templatePath = path.join(context.extensionPath, 'resources', 'webview', 'repo-health.html');
+  let html: string;
+  try { html = fs.readFileSync(templatePath, 'utf-8'); }
+  catch (err) {
+    panel.webview.html = `<html><body style="font-family:sans-serif;padding:24px;color:#e2e8f0;background:#0c111f;">
+      <h2>Cybrium repo-health template missing</h2>
+      <p>Expected: <code>${templatePath}</code></p>
+      <p>${(err as Error).message}</p></body></html>`;
+    return;
+  }
+  const safeJson = JSON.stringify(report)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  html = html.replace(
+    /<script id="cybrium-repo-health" type="application\/json">[\s\S]*?<\/script>/,
+    `<script id="cybrium-repo-health" type="application/json">${safeJson}</script>`,
+  );
+  const isDark = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark
+              || vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrast;
+  html = html.replace(
+    '<html lang="en" data-theme="dark">',
+    `<html lang="en" data-theme="${isDark ? 'dark' : 'light'}">`,
+  );
+  panel.webview.html = html;
 }
 
 async function detectFrameworks() {
@@ -1333,4 +1380,239 @@ function openDependencyReportPanel(context: vscode.ExtensionContext, report: Can
   );
 
   panel.webview.html = html;
+}
+
+
+// ───────────────────────────────────────────────────────────────────
+// v0.9.0 — Send workspace findings to the Cybrium platform
+//
+// Runs cyscan against the workspace, collects findings, and POSTs them
+// to POST <apiUrl>/api/scans/findings/ingest/ using the configured
+// API key. On success, shows a notification with a "Open in Cybrium"
+// button that deep-links to the platform Findings page.
+// ───────────────────────────────────────────────────────────────────
+
+interface CybriumIngestFinding {
+  rule_id?:        string;
+  title:           string;
+  severity:        "critical" | "high" | "medium" | "low" | "info";
+  description?:    string;
+  file?:           string;
+  line?:           number;
+  snippet?:        string;
+  cwe?:            string[];
+  recommendation?: string;
+  evidence?:       Record<string, unknown>;
+}
+
+async function sendToCybriumPlatform() {
+  const cfg = vscode.workspace.getConfiguration("cybrium");
+  const apiUrl = (cfg.get<string>("apiUrl", "https://app.cybrium.ai") || "").replace(/\/+$/, "");
+  const apiKey = cfg.get<string>("apiKey", "") || "";
+
+  if (!apiKey) {
+    const action = await vscode.window.showWarningMessage(
+      "Cybrium API key is not configured. Set cybrium.apiKey in settings, then retry.",
+      "Open settings",
+    );
+    if (action === "Open settings") {
+      vscode.commands.executeCommand("workbench.action.openSettings", "cybrium.apiKey");
+    }
+    return;
+  }
+
+  if (!cyscanPath) {
+    vscode.window.showWarningMessage("cyscan not installed — install it first.");
+    return;
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    vscode.window.showWarningMessage("Open a workspace folder first.");
+    return;
+  }
+  const workspaceRoot = folders[0].uri.fsPath;
+  const workspaceName = folders[0].name || workspaceRoot;
+
+  statusBar.text = "$(loading~spin) Cybrium: collecting findings…";
+  outputChannel.show();
+  outputChannel.appendLine(`\n=== Cybrium: send findings for ${workspaceRoot} → ${apiUrl} ===`);
+
+  // 1. Run cyscan to collect findings.
+  let raw = "";
+  try {
+    raw = await runCommandJson(cyscanPath, ["scan", workspaceRoot, "--format", "json"], 180000);
+  } catch (err) {
+    outputChannel.appendLine(`cyscan failed: ${(err as Error).message}`);
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showErrorMessage(`Cybrium: cyscan failed. ${(err as Error).message.slice(0, 200)}`);
+    return;
+  }
+
+  let cyscanOutput: any;
+  try { cyscanOutput = JSON.parse(raw); }
+  catch {
+    outputChannel.appendLine("cyscan returned non-JSON. First 500 chars:");
+    outputChannel.appendLine(raw.slice(0, 500));
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showErrorMessage("Cybrium: cyscan returned non-JSON. See Output panel.");
+    return;
+  }
+
+  const findings: CybriumIngestFinding[] = canonicaliseForIngest(cyscanOutput);
+  if (findings.length === 0) {
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showInformationMessage("Cybrium: no findings to send.");
+    return;
+  }
+
+  // 2. POST to the ingest endpoint.
+  const body = JSON.stringify({
+    source:    "vscode-cybrium",
+    scan_type: "ide_ingest",
+    host:      workspaceName,
+    findings,
+  });
+
+  statusBar.text = "$(cloud-upload) Cybrium: uploading…";
+  outputChannel.appendLine(`Posting ${findings.length} finding(s) → ${apiUrl}/api/scans/findings/ingest/`);
+
+  let resp: { ok: boolean; status: number; body: string };
+  try {
+    resp = await httpPost(`${apiUrl}/api/scans/findings/ingest/`, body, {
+      "Authorization": `Api-Key ${apiKey}`,
+      "Content-Type":  "application/json",
+    });
+  } catch (err) {
+    outputChannel.appendLine(`Network error: ${(err as Error).message}`);
+    statusBar.text = "$(shield) Cybrium";
+    vscode.window.showErrorMessage(`Cybrium: upload failed. ${(err as Error).message.slice(0, 200)}`);
+    return;
+  }
+
+  statusBar.text = "$(shield) Cybrium";
+
+  if (!resp.ok) {
+    outputChannel.appendLine(`HTTP ${resp.status}: ${resp.body.slice(0, 500)}`);
+    if (resp.status === 401) {
+      vscode.window.showErrorMessage(
+        "Cybrium: API key rejected. Generate a new one under Settings → API Keys on app.cybrium.ai.",
+      );
+    } else {
+      vscode.window.showErrorMessage(
+        `Cybrium: upload failed (HTTP ${resp.status}). See Output panel.`,
+      );
+    }
+    return;
+  }
+
+  let parsed: any = {};
+  try { parsed = JSON.parse(resp.body); } catch { /* ignore */ }
+  const dashboard: string = parsed?.dashboard_url || `${apiUrl}/findings`;
+  outputChannel.appendLine(`✓ Uploaded ${findings.length} finding(s). Dashboard: ${dashboard}`);
+
+  const open = await vscode.window.showInformationMessage(
+    `Cybrium: uploaded ${findings.length} finding(s) to ${new URL(apiUrl).host}.`,
+    "Open in Cybrium",
+  );
+  if (open === "Open in Cybrium") {
+    vscode.env.openExternal(vscode.Uri.parse(dashboard));
+  }
+}
+
+function canonicaliseForIngest(raw: any): CybriumIngestFinding[] {
+  const out: CybriumIngestFinding[] = [];
+  const sevAllowed = new Set(["critical", "high", "medium", "low", "info"]);
+
+  // Shape A: cyscan SARIF — runs[].results[]
+  if (Array.isArray(raw?.runs)) {
+    for (const run of raw.runs) {
+      for (const r of run.results || []) {
+        const loc = r.locations?.[0]?.physicalLocation;
+        const file = loc?.artifactLocation?.uri || "";
+        const line = loc?.region?.startLine;
+        const sev  = sevFromLevel(r.level);
+        out.push({
+          rule_id:        r.ruleId || "",
+          title:          r.message?.text || r.ruleId || "Finding",
+          severity:       sev,
+          description:    r.message?.text || "",
+          file:           file,
+          line:           typeof line === "number" ? line : undefined,
+          evidence:       r.properties ? { properties: r.properties } : undefined,
+        });
+      }
+    }
+    if (out.length > 0) return out;
+  }
+
+  // Shape B: cyscan flat findings list / supply output.
+  const findings = Array.isArray(raw?.findings) ? raw.findings
+                 : Array.isArray(raw)            ? raw
+                 : [];
+  for (const f of findings) {
+    if (typeof f !== "object" || f === null) continue;
+    let sev = String(f.severity || "info").toLowerCase();
+    if (!sevAllowed.has(sev)) sev = "info";
+    out.push({
+      rule_id:        String(f.rule_id || f.id || ""),
+      title:          String(f.title || f.message || f.rule_id || "Finding").slice(0, 500),
+      severity:       sev as CybriumIngestFinding["severity"],
+      description:    String(f.message || f.description || ""),
+      file:           String(f.file || ""),
+      line:           typeof f.line === "number" ? f.line : undefined,
+      snippet:        typeof f.snippet === "string" ? f.snippet : undefined,
+      cwe:            Array.isArray(f.cwe) ? f.cwe.map(String) : undefined,
+      recommendation: typeof f.fix === "string" ? f.fix
+                    : typeof f.recommendation === "string" ? f.recommendation
+                    : undefined,
+    });
+  }
+  return out;
+}
+
+function sevFromLevel(level: string | undefined): CybriumIngestFinding["severity"] {
+  switch ((level || "").toLowerCase()) {
+    case "error":   return "high";
+    case "warning": return "medium";
+    case "note":    return "low";
+    default:        return "info";
+  }
+}
+
+function httpPost(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+): Promise<{ ok: boolean; status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const lib = u.protocol === "https:" ? require("https") : require("http");
+    const req = lib.request(
+      {
+        method:   "POST",
+        hostname: u.hostname,
+        port:     u.port || (u.protocol === "https:" ? 443 : 80),
+        path:     u.pathname + (u.search || ""),
+        headers:  { ...headers, "Content-Length": Buffer.byteLength(body).toString() },
+        timeout:  30000,
+      },
+      (res: any) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          const s = (res.statusCode || 0) as number;
+          resolve({
+            ok: s >= 200 && s < 300,
+            status: s,
+            body: Buffer.concat(chunks).toString("utf-8"),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(new Error("upload timed out")); });
+    req.write(body);
+    req.end();
+  });
 }
