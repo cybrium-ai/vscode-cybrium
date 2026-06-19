@@ -64,6 +64,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('cybrium.scanFile', () => scanCurrentFile()),
+    vscode.commands.registerCommand('cybrium.showFindings', () => showFindings()),
     vscode.commands.registerCommand('cybrium.scanWorkspace', () => scanWorkspace()),
     vscode.commands.registerCommand('cybrium.openDashboard', () => openDashboard()),
     vscode.commands.registerCommand('cybrium.explain', (diag: vscode.Diagnostic) => explainVulnerability(diag, context)),
@@ -378,9 +379,42 @@ function updateStatusBar(count: number) {
   if (count === 0) {
     statusBar.text = '$(shield) Cybrium: clean';
     statusBar.backgroundColor = undefined;
+    statusBar.command = 'cybrium.scanFile';
+    statusBar.tooltip = 'Click to scan current file';
   } else {
     statusBar.text = `$(shield) Cybrium: ${count} finding${count !== 1 ? 's' : ''}`;
     statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    // When findings exist, clicking reveals them in the Problems panel
+    // rather than silently re-scanning the file.
+    statusBar.command = 'cybrium.showFindings';
+    statusBar.tooltip = `Click to view ${count} Cybrium finding${count !== 1 ? 's' : ''}`;
+  }
+}
+
+// Reveal the Cybrium findings the status bar is reporting. They live in VS
+// Code's Problems panel (set via the diagnostics collection); open and focus
+// it, then narrow the filter to Cybrium-sourced entries so the user sees
+// exactly the findings the badge counted.
+async function showFindings() {
+  // No findings attached anywhere — offer a scan instead of opening an empty panel.
+  let total = 0;
+  diagnostics.forEach(() => { total += 1; });
+  if (total === 0) {
+    const action = await vscode.window.showInformationMessage(
+      'Cybrium: no findings yet. Scan the current file?',
+      'Scan File',
+    );
+    if (action === 'Scan File') { scanCurrentFile(); }
+    return;
+  }
+
+  // Open + focus the Problems panel. The `filter` arg is honoured by recent
+  // VS Code builds; if it's ignored the panel still opens with all problems,
+  // and the Cybrium source column makes our entries obvious.
+  try {
+    await vscode.commands.executeCommand('workbench.actions.view.problems', { filter: 'Cybrium' });
+  } catch {
+    await vscode.commands.executeCommand('workbench.panel.markers.view.focus');
   }
 }
 
