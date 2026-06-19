@@ -55,6 +55,25 @@ jobs:
           echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
           echo "Publishing version $PKG_VERSION"
 
+      # A re-pushed tag (or a tag push after a local `vsce publish`) would
+      # otherwise fail the publish step on a duplicate-version rejection — or,
+      # if VSCE_PAT is unset, on the empty-secret guard. Neither is a real
+      # failure: the version is already live. Detect that and no-op cleanly.
+      - name: Check if version already on Marketplace
+        id: published
+        run: |
+          set +e
+          LIVE=$(npx @vscode/vsce show cybrium-ai.cybrium 2>/dev/null \
+                 | grep -E '^[[:space:]]*Version:' | head -1 | awk '{print $2}')
+          set -e
+          echo "Marketplace has: '${LIVE}'  ·  this tag wants: '${{ steps.ver.outputs.version }}'"
+          if [ "$LIVE" = "${{ steps.ver.outputs.version }}" ]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Marketplace already has ${{ steps.ver.outputs.version }} — publish will be skipped (no-op)."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install dependencies
         run: npm ci
 
@@ -72,7 +91,9 @@ jobs:
           retention-days: 90
 
       - name: Publish to Marketplace
-        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        if: |
+          steps.published.outputs.already != 'true' &&
+          (github.event_name == 'push' || github.event.inputs.dry_run == 'false')
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
@@ -84,9 +105,15 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## VS Code extension published" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Version: \`${{ steps.ver.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Publisher: cybrium-ai" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Marketplace: https://marketplace.visualstudio.com/items?itemName=cybrium-ai.cybrium-security-scanner" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.published.outputs.already }}" = "true" ]; then
+            echo "## VS Code extension — publish skipped (already live)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Marketplace already has \`${{ steps.ver.outputs.version }}\` (likely published locally via \`vsce publish\`). No-op." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## VS Code extension published" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Version: \`${{ steps.ver.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Publisher: cybrium-ai" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- Marketplace: https://marketplace.visualstudio.com/items?itemName=cybrium-ai.cybrium" >> "$GITHUB_STEP_SUMMARY"
           echo "- VSIX uploaded as build artifact for re-download" >> "$GITHUB_STEP_SUMMARY"
